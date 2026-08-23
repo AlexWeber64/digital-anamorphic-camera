@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Anamorphic Stretch Cam</string>
+    <string name="permission_rationale">Camera and microphone access are required to record video.</string>
+    <string name="permission_denied">Permissions denied. Grant camera and microphone access in Settings to use this app.</string>
+    <string name="mode_stretch">Stretch</string>
+    <string name="mode_squeeze">Squeeze</string>
+    <string name="record_start">Record</string>
+    <string name="record_stop">Stop</string>
+    <string name="saved_to">Saved to %1$s</string>
+    <string name="save_failed">Failed to save recording: %1$s</string>
+</resources>
