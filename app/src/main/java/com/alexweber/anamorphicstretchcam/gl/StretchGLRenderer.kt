@@ -36,6 +36,14 @@ import java.util.concurrent.CountDownLatch
  * untouched and MediaMuxer.setOrientationHint() (set by StretchRecorder) carries the
  * playback rotation instead - that's a standard orientation hint, unrelated to the
  * anamorphic distortion itself, which stays a real per-pixel transform.
+ *
+ * The app's window is locked to portrait (see AndroidManifest.xml) so its control chrome
+ * never re-flows when the device physically rotates - only individual chrome glyphs
+ * counter-rotate in place (see MainActivity). [rotationDegrees] is therefore driven by
+ * MainActivity's live [android.view.OrientationEventListener] reading, not by any
+ * display-rotation signal (which would never change once the window is locked) - this is
+ * what lets the *preview content itself* still visually rotate to match physical device
+ * orientation even though the SurfaceView's own on-screen bounds never change shape.
  */
 class StretchGLRenderer {
 
@@ -47,6 +55,9 @@ class StretchGLRenderer {
 
     @Volatile var scale: Float = 2.0f
     @Volatile var mode: Mode = Mode.STRETCH
+    /** Raw (uncalibrated) sensor-orientation-adjusted hint, updated live from MainActivity's
+     *  OrientationEventListener on every accelerometer-reported orientation change. See
+     *  [correctedRotationDegrees] for the actually-applied, calibrated value. */
     @Volatile var rotationDegrees: Int = 0
     /** Whether the currently-bound camera is front-facing - the calibration in
      *  [correctedRotationDegrees] is mirrored for front cameras (confirmed on-device: the same
@@ -308,9 +319,12 @@ class StretchGLRenderer {
      * sign for front vs. back (mirrored sensor mounting).
      *
      * See [MainActivity.computeOrientationHint] for the matching correction applied to the
-     * recorded file/photo orientation.
+     * recorded file/photo orientation. Public because MainActivity also calls this directly
+     * as the single source of truth for the calibrated hint (rather than duplicating the
+     * calibration formula), now that [rotationDegrees] is accelerometer-driven rather than
+     * display-rotation-driven.
      */
-    private fun correctedRotationDegrees(): Int {
+    fun correctedRotationDegrees(): Int {
         return if (facingFront) {
             ((FRONT_ROTATION_CALIBRATION_BASE_DEGREES - rotationDegrees) % 360 + 360) % 360
         } else {
