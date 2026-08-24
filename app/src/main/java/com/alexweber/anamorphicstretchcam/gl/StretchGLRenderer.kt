@@ -61,6 +61,11 @@ class StretchGLRenderer {
     private val texMatrix = FloatArray(16)
     private val mvpMatrix = FloatArray(16)
 
+    /** Nanosecond timestamp of the first frame drawn to the encoder surface since it was last
+     *  attached; subtracted from every subsequent frame's [SurfaceTexture.getTimestamp] so the
+     *  encoder sees a stream starting at 0 instead of raw device-boot-relative nanos. */
+    private var encoderTimestampBaseNanos: Long = NO_BASELINE
+
     fun start(listener: Listener) {
         this.listener = listener
         thread.start()
@@ -104,6 +109,7 @@ class StretchGLRenderer {
             encoderSurface = WindowSurface(eglCore!!, surface, ownsSurface = false).apply {
                 setDimensions(width, height)
             }
+            encoderTimestampBaseNanos = NO_BASELINE
         }
     }
 
@@ -112,6 +118,7 @@ class StretchGLRenderer {
         handler.post {
             encoderSurface?.release()
             encoderSurface = null
+            encoderTimestampBaseNanos = NO_BASELINE
             latch.countDown()
         }
         latch.await()
@@ -142,10 +149,16 @@ class StretchGLRenderer {
         }
         encoderSurface?.let {
             drawToSurface(it, applyRotation = false)
+            // texture.timestamp is nanoseconds since device boot, not since recording start;
+            // MediaCodec expects a stream starting at (or near) 0, so the first frame observed
+            // after attaching the encoder surface becomes the baseline for every frame after it.
+            if (encoderTimestampBaseNanos == NO_BASELINE) {
+                encoderTimestampBaseNanos = texture.timestamp
+            }
             // Presentation time must land on the EGL surface *before* eglSwapBuffers,
             // since the swap is what actually hands this buffer to the MediaCodec
             // consumer - setting it after would timestamp the next frame instead.
-            it.setPresentationTime(texture.timestamp)
+            it.setPresentationTime(texture.timestamp - encoderTimestampBaseNanos)
             it.swapBuffers()
         }
     }
@@ -187,5 +200,6 @@ class StretchGLRenderer {
 
     companion object {
         private const val TAG = "StretchGLRenderer"
+        private const val NO_BASELINE = Long.MIN_VALUE
     }
 }

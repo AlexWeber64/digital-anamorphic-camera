@@ -97,17 +97,31 @@ class StretchRecorder(private val context: Context) {
         pendingFile = file
         displayName = name
         muxer = pfdMuxer
+        Log.d(TAG, "ROTATION_DEBUG muxer.setOrientationHint($orientationHintDegrees)")
         muxer!!.setOrientationHint(orientationHintDegrees)
 
-        val useAudio = config.useAudio
-        muxerGate = MuxerGate(pfdMuxer, expectedTracks = if (useAudio) 2 else 1)
+        // Audio hardware (AudioSource.CAMCORDER in particular) can fail to initialize on some
+        // devices/emulators; probe it *before* deciding expectedTracks below, otherwise a failure
+        // discovered only inside the already-running capture thread would leave the MuxerGate
+        // permanently waiting on a second track that never arrives, hanging finalizeWhenDone().
+        var audioSetup: AudioSetup? = null
+        if (config.useAudio) {
+            audioSetup = try {
+                prepareAudio()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Audio capture unavailable, recording video only", t)
+                null
+            }
+        }
+
+        muxerGate = MuxerGate(pfdMuxer, expectedTracks = if (audioSetup != null) 2 else 1)
         audioEos.set(false)
         recording.set(true)
 
         videoThread = Thread({ drainVideoLoop(codec) }, "StretchRecorder-Video").apply { start() }
 
-        if (useAudio) {
-            setupAudio(config)
+        if (audioSetup != null) {
+            startAudioThreads(audioSetup)
         }
 
         Thread({ finalizeWhenDone(callback) }, "StretchRecorder-Finalizer").start()
@@ -119,17 +133,13 @@ class StretchRecorder(private val context: Context) {
         audioEos.set(true)
     }
 
-    private fun setupAudio(config: Config) {
+    private data class AudioSetup(val record: AudioRecord, val codec: MediaCodec, val sampleRate: Int, val minBufferSize: Int)
+
+    private fun prepareAudio(): AudioSetup {
         val sampleRate = 44100
         val channelConfig = AudioFormat.CHANNEL_IN_MONO
         val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
-        val record = AudioRecord(
-            MediaRecorder.AudioSource.CAMCORDER,
-            sampleRate,
-            channelConfig,
-            AudioFormat.ENCODING_PCM_16BIT,
-            minBufferSize * 4
-        )
+        val record = createAudioRecord(sampleRate, channelConfig, minBufferSize)
         val aFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
             setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
@@ -140,6 +150,11 @@ class StretchRecorder(private val context: Context) {
         codec.start()
         audioCodec = codec
         audioRecord = record
+        return AudioSetup(record, codec, sampleRate, minBufferSize)
+    }
+
+    private fun startAudioThreads(setup: AudioSetup) {
+        val (record, codec, sampleRate, minBufferSize) = setup
         record.startRecording()
 
         var totalSamples = 0L
@@ -167,6 +182,35 @@ class StretchRecorder(private val context: Context) {
         }, "StretchRecorder-AudioCapture").apply { start() }
 
         audioDrainThread = Thread({ drainAudioLoop(codec) }, "StretchRecorder-AudioDrain").apply { start() }
+    }
+
+    /**
+     * AudioSource.CAMCORDER isn't guaranteed on every device (emulators in particular often
+     * fail to initialize it); if construction leaves the AudioRecord in STATE_UNINITIALIZED,
+     * fall back to the universally-supported MIC source rather than silently recording nothing.
+     */
+    private fun createAudioRecord(sampleRate: Int, channelConfig: Int, minBufferSize: Int): AudioRecord {
+        val bufferSizeBytes = minBufferSize * 4
+        var record = AudioRecord(
+            MediaRecorder.AudioSource.CAMCORDER,
+            sampleRate,
+            channelConfig,
+            AudioFormat.ENCODING_PCM_16BIT,
+            bufferSizeBytes
+        )
+        if (record.state != AudioRecord.STATE_INITIALIZED) {
+            Log.w(TAG, "AudioSource.CAMCORDER failed to initialize, falling back to AudioSource.MIC")
+            record.release()
+            record = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                sampleRate,
+                channelConfig,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSizeBytes
+            )
+        }
+        check(record.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord failed to initialize" }
+        return record
     }
 
     private fun drainVideoLoop(codec: MediaCodec) {

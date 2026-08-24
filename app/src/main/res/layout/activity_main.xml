@@ -67,10 +67,34 @@
         android:padding="16dp">
 
         <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/captureModeToggleGroup"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            app:singleSelection="true"
+            app:selectionRequired="true">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/captureModeVideoButton"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/capture_mode_video" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/captureModePhotoButton"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/capture_mode_photo" />
+        </com.google.android.material.button.MaterialButtonToggleGroup>
+
+        <com.google.android.material.button.MaterialButtonToggleGroup
             android:id="@+id/modeToggleGroup"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
+            android:layout_marginTop="8dp"
             app:singleSelection="true"
             app:selectionRequired="true">
 
@@ -111,6 +135,17 @@
                 android:layout_gravity="center"
                 android:background="@drawable/record_button_idle"
                 android:contentDescription="@string/record_start" />
+
+            <ImageButton
+                android:id="@+id/cameraSwitchButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_gravity="center_vertical|end"
+                android:layout_marginEnd="8dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/switch_camera"
+                android:padding="8dp"
+                android:src="@drawable/ic_camera_switch" />
         </FrameLayout>
     </LinearLayout>
 

@@ -7,6 +7,11 @@
     <string name="mode_squeeze">Squeeze</string>
     <string name="record_start">Record</string>
     <string name="record_stop">Stop</string>
+    <string name="capture_photo">Take photo</string>
     <string name="saved_to">Saved to %1$s</string>
     <string name="save_failed">Failed to save recording: %1$s</string>
+    <string name="photo_save_failed">Failed to save photo: %1$s</string>
+    <string name="capture_mode_video">Video</string>
+    <string name="capture_mode_photo">Photo</string>
+    <string name="switch_camera">Switch camera</string>
 </resources>

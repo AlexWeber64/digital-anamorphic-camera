@@ -32,6 +32,7 @@ class MainActivity : AppCompatActivity() {
     private var captureSize: Size = Size(1920, 1080)
     private var isRecording = false
     private var recordStartElapsedMs = 0L
+    private var pipelineInitialized = false
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private val timerTick = object : Runnable {
@@ -48,10 +49,9 @@ class MainActivity : AppCompatActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
-        val cameraGranted = grants[Manifest.permission.CAMERA] == true
+        val cameraGranted = grants[Manifest.permission.CAMERA] ?: hasCameraPermission()
         if (cameraGranted) {
-            binding.permissionOverlay.visibility = android.view.View.GONE
-            initPipeline()
+            initPipelineIfNeeded()
         } else {
             binding.permissionOverlay.visibility = android.view.View.VISIBLE
             binding.permissionText.setText(R.string.permission_denied)
@@ -73,14 +73,17 @@ class MainActivity : AppCompatActivity() {
         setupControls()
         setupPreviewSurface()
 
-        if (hasRequiredPermissions()) {
-            initPipeline()
-        } else {
+        initPipelineIfNeeded()
+        // Camera permission alone is enough to start the pipeline (see initPipelineIfNeeded),
+        // but RECORD_AUDIO must be requested independently - without this, a device that already
+        // granted CAMERA in an earlier install would never see the mic prompt at all, silently
+        // leaving every recording without audio.
+        if (!hasCameraPermission() || !hasAudioPermission()) {
             requestPermissions()
         }
     }
 
-    private fun hasRequiredPermissions(): Boolean {
+    private fun hasCameraPermission(): Boolean {
         return ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
     }
@@ -92,6 +95,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestPermissions() {
         permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
+    }
+
+    private fun initPipelineIfNeeded() {
+        if (pipelineInitialized || !hasCameraPermission()) return
+        pipelineInitialized = true
+        binding.permissionOverlay.visibility = android.view.View.GONE
+        initPipeline()
     }
 
     private fun setupPreviewSurface() {
