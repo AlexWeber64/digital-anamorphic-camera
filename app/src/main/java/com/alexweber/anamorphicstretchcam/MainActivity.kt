@@ -63,6 +63,11 @@ class MainActivity : AppCompatActivity() {
      *  the device physically rotates, while their containing chrome panel stays docked. */
     private val rotatingChromeViews = mutableListOf<android.view.View>()
 
+    /** True when the chrome glyphs are currently rotated 90/270 (their text is now vertical),
+     *  meaning each glyph's own container bounds must be swapped (width<->height) to match -
+     *  see [applySwappedBounds]. */
+    private var chromeBoundsSwapped = false
+
     private val orientationEventListener by lazy {
         object : OrientationEventListener(this) {
             override fun onOrientationChanged(orientation: Int) {
@@ -222,6 +227,10 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.mode_squeeze)
         }
         binding.scaleReadout.text = String.format(Locale.US, "%.1fx %s", renderer.scale, modeLabel.uppercase())
+        // Text length changes here (e.g. "STRETCH" <-> "SQUEEZE"), so re-apply the current
+        // swap state - not just re-run it on the next rotation change - or a label change while
+        // already rotated 90/270 would clip against a stale natural-size measurement.
+        applySwappedBounds(binding.scaleReadout, chromeBoundsSwapped)
     }
 
     private fun initPipeline() {
@@ -315,8 +324,41 @@ class MainActivity : AppCompatActivity() {
      *  rotation convention. */
     private fun applyChromeCounterRotation(roundedDeviceOrientation: Int) {
         val angle = -roundedDeviceOrientation.toFloat()
+        chromeBoundsSwapped = roundedDeviceOrientation == 90 || roundedDeviceOrientation == 270
         rotatingChromeViews.forEach { view ->
+            applySwappedBounds(view, chromeBoundsSwapped)
             view.animate().rotation(angle).setDuration(250).start()
+        }
+    }
+
+    /**
+     * Fixes a real clipping bug, not a cosmetic one: [android.view.View.setRotation] only
+     * rotates the *rendered pixels* - it never touches the view's own measured/laid-out
+     * width/height. A wrap_content pill sized for horizontal text ("2.0x STRETCH") keeps
+     * exactly that wide-and-short box after rotating 90 degrees, so the parent still clips
+     * child drawing to that box's *original* (unrotated) rectangle - the now-vertical text
+     * gets cropped to whatever fit in the old horizontal box ("STRETCH" -> "STRETC"). Swapping
+     * the view's own layoutParams width/height to match its *rotated* footprint makes that
+     * clip rectangle match the rotated content instead, eliminating the clipping.
+     *
+     * Re-measures the view's natural (unrotated) intrinsic size fresh every call - rather than
+     * caching it once - since content like [scaleReadout]'s text ("1.0x STRETCH" vs
+     * "4.0x SQUEEZE") changes length at runtime; a stale cached size would clip again as soon
+     * as a longer label was selected while already rotated.
+     */
+    private fun applySwappedBounds(view: android.view.View, swapped: Boolean) {
+        val lp = view.layoutParams ?: return
+        val unspecified = android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED)
+        view.measure(unspecified, unspecified)
+        val naturalWidth = view.measuredWidth
+        val naturalHeight = view.measuredHeight
+        if (naturalWidth <= 0 || naturalHeight <= 0) return
+        val targetWidth = if (swapped) naturalHeight else naturalWidth
+        val targetHeight = if (swapped) naturalWidth else naturalHeight
+        if (lp.width != targetWidth || lp.height != targetHeight) {
+            lp.width = targetWidth
+            lp.height = targetHeight
+            view.layoutParams = lp
         }
     }
 
