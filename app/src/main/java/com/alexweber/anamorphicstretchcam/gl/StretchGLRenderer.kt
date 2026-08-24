@@ -1,5 +1,6 @@
 package com.alexweber.anamorphicstretchcam.gl
 
+import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.opengl.GLES20
 import android.opengl.Matrix
@@ -7,6 +8,8 @@ import android.opengl.EGLSurface
 import android.os.Handler
 import android.os.HandlerThread
 import android.view.Surface
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 
 /**
@@ -122,6 +125,58 @@ class StretchGLRenderer {
             latch.countDown()
         }
         latch.await()
+    }
+
+    /**
+     * Renders the current camera frame (with the same anamorphic stretch/squeeze transform used
+     * for the encoder, but no rotation baked in) into an offscreen buffer of [width]x[height] and
+     * hands the caller a [Bitmap]. Runs on the GL thread; [callback] is also invoked on the GL
+     * thread, so callers must not do heavy work (rotation, file I/O) inside it directly.
+     */
+    fun capturePhoto(width: Int, height: Int, callback: (Bitmap?) -> Unit) {
+        handler.post {
+            val core = eglCore
+            val prog = program
+            val texture = cameraTexture
+            if (core == null || prog == null || texture == null || width <= 0 || height <= 0) {
+                callback(null)
+                return@post
+            }
+
+            val pbuffer = core.createOffscreenPBuffer(width, height)
+            core.makeCurrent(pbuffer)
+            GLES20.glViewport(0, 0, width, height)
+            GLES20.glClearColor(0f, 0f, 0f, 1f)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+
+            Matrix.setIdentityM(mvpMatrix, 0)
+            // [width]/[height] is expected to already be the caller's computeOutputSize() result,
+            // i.e. pre-widened for STRETCH the same way the video encoder's buffer is - so, like
+            // the encoder target in drawToSurface(), STRETCH needs no extra matrix scale here.
+            val sx = when (mode) {
+                Mode.STRETCH -> 1f
+                Mode.SQUEEZE -> 1f / scale
+            }
+            Matrix.scaleM(mvpMatrix, 0, sx, 1f, 1f)
+            prog.draw(mvpMatrix, texMatrix)
+
+            val pixelBuffer = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
+            GLES20.glReadPixels(0, 0, width, height, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixelBuffer)
+            core.releaseSurface(pbuffer)
+
+            // Restore whichever surface was current before the capture so preview/encoder
+            // rendering on the next frame isn't left pointed at the now-destroyed pbuffer.
+            (screenSurface ?: encoderSurface)?.makeCurrent()
+
+            pixelBuffer.rewind()
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            bitmap.copyPixelsFromBuffer(pixelBuffer)
+            // glReadPixels rows come back bottom-to-top; Bitmap expects top-to-bottom.
+            val flipMatrix = android.graphics.Matrix().apply { preScale(1f, -1f) }
+            val flipped = Bitmap.createBitmap(bitmap, 0, 0, width, height, flipMatrix, true)
+            bitmap.recycle()
+            callback(flipped)
+        }
     }
 
     private fun setupGl() {

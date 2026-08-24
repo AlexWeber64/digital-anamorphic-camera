@@ -1,13 +1,19 @@
 package com.alexweber.anamorphicstretchcam
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
+import android.media.MediaScannerConnection
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
 import android.view.SurfaceHolder
@@ -18,10 +24,15 @@ import androidx.core.view.children
 import com.alexweber.anamorphicstretchcam.databinding.ActivityMainBinding
 import com.alexweber.anamorphicstretchcam.gl.StretchGLRenderer
 import com.google.android.material.snackbar.Snackbar
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
+
+    private enum class CaptureMode { VIDEO, PHOTO }
 
     private lateinit var binding: ActivityMainBinding
 
@@ -32,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private var captureSize: Size = Size(1920, 1080)
     private var isRecording = false
     private var recordStartElapsedMs = 0L
+    private var captureMode = CaptureMode.VIDEO
     private var pipelineInitialized = false
 
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -137,11 +149,42 @@ class MainActivity : AppCompatActivity() {
         }
         binding.modeStretchButton.isChecked = true
 
+        binding.captureModeToggleGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (!isChecked) return@addOnButtonCheckedListener
+            captureMode = if (checkedId == binding.captureModeVideoButton.id) {
+                CaptureMode.VIDEO
+            } else {
+                CaptureMode.PHOTO
+            }
+            updateCaptureModeUi()
+        }
+        binding.captureModeVideoButton.isChecked = true
+
         binding.recordButton.setOnClickListener {
-            if (isRecording) stopRecording() else startRecording()
+            when (captureMode) {
+                CaptureMode.PHOTO -> capturePhoto()
+                CaptureMode.VIDEO -> if (isRecording) stopRecording() else startRecording()
+            }
+        }
+
+        binding.cameraSwitchButton.setOnClickListener {
+            cameraSource.switchCamera()
         }
 
         updateScaleReadout()
+        updateCaptureModeUi()
+    }
+
+    private fun updateCaptureModeUi() {
+        if (captureMode == CaptureMode.PHOTO) {
+            binding.recordButton.setBackgroundResource(R.drawable.record_button_photo)
+            binding.recordButton.contentDescription = getString(R.string.capture_photo)
+        } else {
+            binding.recordButton.setBackgroundResource(
+                if (isRecording) R.drawable.record_button_recording else R.drawable.record_button_idle
+            )
+            binding.recordButton.contentDescription = getString(R.string.record_start)
+        }
     }
 
     private fun updateScaleReadout() {
@@ -178,6 +221,74 @@ class MainActivity : AppCompatActivity() {
             }
             StretchGLRenderer.Mode.SQUEEZE -> captureSize
         }
+    }
+
+    private fun capturePhoto() {
+        animateCaptureButtonPress()
+        val outputSize = computeOutputSize()
+        renderer.capturePhoto(outputSize.width, outputSize.height) { bitmap ->
+            if (bitmap == null) {
+                runOnUiThread {
+                    Snackbar.make(binding.root, getString(R.string.photo_save_failed, ""), Snackbar.LENGTH_LONG).show()
+                }
+                return@capturePhoto
+            }
+            savePhoto(bitmap)
+        }
+    }
+
+    /** Shrinks the shutter button slightly and back to full size, as a shutter-press cue. */
+    private fun animateCaptureButtonPress() {
+        val button = binding.recordButton
+        button.animate().cancel()
+        button.animate()
+            .scaleX(0.85f)
+            .scaleY(0.85f)
+            .setDuration(80)
+            .withEndAction {
+                button.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+            }
+            .start()
+    }
+
+    private fun savePhoto(bitmap: Bitmap) {
+        Thread {
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            val name = "ANAMORPHIC_$timestamp.jpg"
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                        put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/Camera")
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                    val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                        ?: throw IllegalStateException("MediaStore insert failed")
+                    contentResolver.openOutputStream(uri)?.use { out ->
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
+                    } ?: throw IllegalStateException("openOutputStream failed")
+                    contentResolver.update(
+                        uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null
+                    )
+                } else {
+                    val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera")
+                    if (!dir.exists()) dir.mkdirs()
+                    val file = File(dir, name)
+                    file.outputStream().use { out -> bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out) }
+                    MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), null, null)
+                }
+                bitmap.recycle()
+                runOnUiThread {
+                    Snackbar.make(binding.root, getString(R.string.saved_to, name), Snackbar.LENGTH_LONG).show()
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "Photo save failed", t)
+                runOnUiThread {
+                    Snackbar.make(binding.root, getString(R.string.photo_save_failed, t.message ?: ""), Snackbar.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     private fun startRecording() {
@@ -226,6 +337,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun setRecordingUiState(recording: Boolean) {
         binding.modeToggleGroup.children.forEach { it.isEnabled = !recording }
+        binding.captureModeToggleGroup.children.forEach { it.isEnabled = !recording }
+        binding.cameraSwitchButton.isEnabled = !recording
         binding.recordButton.setBackgroundResource(
             if (recording) R.drawable.record_button_recording else R.drawable.record_button_idle
         )
