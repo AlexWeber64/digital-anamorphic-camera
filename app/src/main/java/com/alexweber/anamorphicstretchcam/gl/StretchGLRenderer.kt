@@ -7,6 +7,7 @@ import android.opengl.Matrix
 import android.opengl.EGLSurface
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -47,6 +48,10 @@ class StretchGLRenderer {
     @Volatile var scale: Float = 2.0f
     @Volatile var mode: Mode = Mode.STRETCH
     @Volatile var rotationDegrees: Int = 0
+    /** Whether the currently-bound camera is front-facing - the calibration in
+     *  [correctedRotationDegrees] is mirrored for front cameras (confirmed on-device: the same
+     *  offset that fixed the back camera left the front camera upside-down in portrait). */
+    @Volatile var facingFront: Boolean = false
 
     private var listener: Listener? = null
 
@@ -179,6 +184,50 @@ class StretchGLRenderer {
         }
     }
 
+    /**
+     * TEMPORARY diagnostic: dumps the exact GL-side state feeding both destinations, so we can
+     * see whether the SurfaceTexture transform itself (not just the rotationDegrees hint) is
+     * contributing an unexpected rotation. Runs on the GL thread; safe to call from any thread.
+     */
+    fun logRotationDebugSnapshot(callSite: String) {
+        handler.post {
+            val corrected = correctedRotationDegrees()
+            val screenMvp = FloatArray(16)
+            Matrix.setIdentityM(screenMvp, 0)
+            if (corrected != 0) {
+                Matrix.rotateM(screenMvp, 0, -corrected.toFloat(), 0f, 0f, 1f)
+            }
+            val screenSx = when (mode) {
+                Mode.STRETCH -> scale
+                Mode.SQUEEZE -> 1f / scale
+            }
+            Matrix.scaleM(screenMvp, 0, screenSx, 1f, 1f)
+
+            val encoderMvp = FloatArray(16)
+            Matrix.setIdentityM(encoderMvp, 0)
+            val encoderSx = when (mode) {
+                Mode.STRETCH -> 1f
+                Mode.SQUEEZE -> 1f / scale
+            }
+            Matrix.scaleM(encoderMvp, 0, encoderSx, 1f, 1f)
+
+            fun fmt(m: FloatArray) = m.joinToString(prefix = "[", postfix = "]") { "%.3f".format(it) }
+
+            // Logged as separate single-line calls - a single Log.d with embedded '\n' only has
+            // the literal "ROTATION_DEBUG" text on its first line, so line-filtering tools like
+            // `findstr`/`grep` silently drop every continuation line.
+            Log.d(
+                TAG,
+                "ROTATION_DEBUG[$callSite] rotationDegrees=$rotationDegrees facingFront=$facingFront correctedRotationDegrees=$corrected " +
+                    "mode=$mode scale=$scale screenSurfaceAttached=${screenSurface != null} encoderSurfaceAttached=${encoderSurface != null}"
+            )
+            Log.d(TAG, "ROTATION_DEBUG[$callSite] texMatrix (SurfaceTexture.getTransformMatrix(), shared by both destinations) = ${fmt(texMatrix)}")
+            Log.d(TAG, "ROTATION_DEBUG[$callSite] screen mvpMatrix (applyRotation=true, rotateM(-correctedRotationDegrees) then scaleM(sx,1,1)) = ${fmt(screenMvp)}")
+            Log.d(TAG, "ROTATION_DEBUG[$callSite] encoder mvpMatrix (applyRotation=false, no rotateM, scaleM(sx,1,1) only) = ${fmt(encoderMvp)}")
+            Log.d(TAG, "ROTATION_DEBUG[$callSite] vertex shader applies: gl_Position = mvpMatrix * aPosition; vTextureCoord = (texMatrix * aTextureCoord).xy")
+        }
+    }
+
     private fun setupGl() {
         eglCore = EglCore()
         // Bind a throwaway 1x1 pbuffer so we have a current context before touching GLES.
@@ -226,8 +275,9 @@ class StretchGLRenderer {
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
         Matrix.setIdentityM(mvpMatrix, 0)
-        if (applyRotation && rotationDegrees != 0) {
-            Matrix.rotateM(mvpMatrix, 0, -rotationDegrees.toFloat(), 0f, 0f, 1f)
+        val corrected = correctedRotationDegrees()
+        if (applyRotation && corrected != 0) {
+            Matrix.rotateM(mvpMatrix, 0, -corrected.toFloat(), 0f, 0f, 1f)
         }
         val sx = when (mode) {
             Mode.STRETCH -> if (applyRotation) scale else 1f
@@ -236,6 +286,36 @@ class StretchGLRenderer {
         Matrix.scaleM(mvpMatrix, 0, sx, 1f, 1f)
 
         prog.draw(mvpMatrix, texMatrix)
+    }
+
+    /**
+     * Confirmed on-device (real recording + logcat trace, not a formula guess): for the back
+     * camera, the live preview and the recorded file were both rotated a *constant* 90 degrees
+     * too far clockwise regardless of physical device orientation - even though [rotationDegrees]
+     * itself was verified to correctly track physical rotation (90 at portrait, 180 after a live
+     * ~90 degree physical turn). A constant, orientation-independent error while the tracked value
+     * itself moves correctly means the raw camera texture already carries an extra ~90 degrees of
+     * rotation before our own compensation is applied - consistent with the logged texMatrix for
+     * this device mapping (u,v) -> (1-v, 1-u) (a transpose-like transform), not the plain
+     * vertical flip most SurfaceTexture/GL sample code assumes. [ROTATION_CALIBRATION_OFFSET_DEGREES]
+     * removes that fixed double-count for the back camera.
+     *
+     * The front camera needed a *different* correction, also confirmed from two independent
+     * on-device data points (portrait: rotationDegrees=270, observed upside-down i.e. correct=0;
+     * a live turn to landscape: rotationDegrees=180, observed correct i.e. correct=90). Both fit
+     * `(FRONT_ROTATION_CALIBRATION_BASE_DEGREES - rotationDegrees) % 360`, not the back camera's
+     * subtractive offset - consistent with CameraX's own rotationDegrees formula also flipping
+     * sign for front vs. back (mirrored sensor mounting).
+     *
+     * See [MainActivity.computeOrientationHint] for the matching correction applied to the
+     * recorded file/photo orientation.
+     */
+    private fun correctedRotationDegrees(): Int {
+        return if (facingFront) {
+            ((FRONT_ROTATION_CALIBRATION_BASE_DEGREES - rotationDegrees) % 360 + 360) % 360
+        } else {
+            ((rotationDegrees - ROTATION_CALIBRATION_OFFSET_DEGREES) % 360 + 360) % 360
+        }
     }
 
     private fun releaseGl() {
@@ -256,5 +336,15 @@ class StretchGLRenderer {
     companion object {
         private const val TAG = "StretchGLRenderer"
         private const val NO_BASELINE = Long.MIN_VALUE
+
+        /** See [correctedRotationDegrees] - empirically-calibrated constant offset for the *back*
+         *  camera, not derived from the standard sensor-orientation formula alone. Shared with
+         *  MainActivity.computeOrientationHint() so the preview and the recorded file/photo stay
+         *  consistent with each other. */
+        const val ROTATION_CALIBRATION_OFFSET_DEGREES = 90
+
+        /** See [correctedRotationDegrees] - empirically-calibrated base for the *front* camera's
+         *  mirrored correction: `(FRONT_ROTATION_CALIBRATION_BASE_DEGREES - rotationDegrees) % 360`. */
+        const val FRONT_ROTATION_CALIBRATION_BASE_DEGREES = 270
     }
 }

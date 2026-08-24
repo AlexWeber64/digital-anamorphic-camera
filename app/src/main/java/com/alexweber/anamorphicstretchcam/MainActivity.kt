@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
+import android.hardware.camera2.CameraCharacteristics
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
@@ -16,6 +17,7 @@ import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
+import android.view.OrientationEventListener
 import android.view.SurfaceHolder
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -45,6 +47,19 @@ class MainActivity : AppCompatActivity() {
     private var recordStartElapsedMs = 0L
     private var captureMode = CaptureMode.VIDEO
     private var pipelineInitialized = false
+
+    /** Clockwise device rotation from natural orientation, tracked live from the accelerometer
+     *  so recorded orientation stays correct even if the activity's display rotation is locked. */
+    private var deviceOrientationDegrees = 0
+    private val orientationEventListener by lazy {
+        object : OrientationEventListener(this) {
+            override fun onOrientationChanged(orientation: Int) {
+                if (orientation != ORIENTATION_UNKNOWN) {
+                    deviceOrientationDegrees = orientation
+                }
+            }
+        }
+    }
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private val timerTick = object : Runnable {
@@ -78,6 +93,7 @@ class MainActivity : AppCompatActivity() {
         cameraSource = CameraSource(this, this)
         cameraSource.rotationListener = object : CameraSource.RotationListener {
             override fun onRotationChanged(rotationDegrees: Int) {
+                Log.d(TAG, "ROTATION_DEBUG CameraX Preview TransformationInfo.rotationDegrees -> $rotationDegrees")
                 renderer.rotationDegrees = rotationDegrees
             }
         }
@@ -207,6 +223,7 @@ class MainActivity : AppCompatActivity() {
     private fun startCamera(surfaceTexture: SurfaceTexture) {
         cameraSource.start(surfaceTexture) { size ->
             captureSize = size
+            renderer.facingFront = cameraSource.lensFacing == CameraCharacteristics.LENS_FACING_FRONT
             Log.i(TAG, "Camera bound at native sensor size $size")
         }
     }
@@ -223,9 +240,48 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Computes the clockwise rotation (0/90/180/270) needed to display a sensor-orientation
+     * buffer correctly, from the live accelerometer-based device orientation plus the active
+     * camera's SENSOR_ORIENTATION/LENS_FACING - the same formula documented on
+     * [CameraCharacteristics.SENSOR_ORIENTATION]. Used for both the MediaMuxer orientation hint
+     * and the still-photo rotation, so both stay correct even if the display's own rotation is
+     * locked (e.g. holding the phone sideways to record landscape footage from a portrait-locked
+     * UI).
+     *
+     * The raw formula result is then adjusted per [StretchGLRenderer.correctedRotationDegrees] -
+     * on-device testing (logcat ROTATION_DEBUG trace, not a formula guess) showed a *constant*
+     * offset error for the back camera (fixed by [StretchGLRenderer.ROTATION_CALIBRATION_OFFSET_DEGREES])
+     * and a differently-signed error for the front camera (fixed by mirroring around
+     * [StretchGLRenderer.FRONT_ROTATION_CALIBRATION_BASE_DEGREES]) - both confirmed correct in
+     * portrait and after a live rotation to landscape.
+     */
+    private fun computeOrientationHint(): Int {
+        var rounded = ((deviceOrientationDegrees + 45) / 90 * 90) % 360
+        if (rounded < 0) rounded += 360
+        val facingFront = cameraSource.lensFacing == CameraCharacteristics.LENS_FACING_FRONT
+        val signedOrientation = if (facingFront) -rounded else rounded
+        val rawHint = ((cameraSource.sensorOrientation + signedOrientation) % 360 + 360) % 360
+        val hint = if (facingFront) {
+            ((StretchGLRenderer.FRONT_ROTATION_CALIBRATION_BASE_DEGREES - rawHint) % 360 + 360) % 360
+        } else {
+            ((rawHint - StretchGLRenderer.ROTATION_CALIBRATION_OFFSET_DEGREES) % 360 + 360) % 360
+        }
+        Log.d(
+            TAG,
+            "ROTATION_DEBUG computeOrientationHint(): rawDeviceOrientation=$deviceOrientationDegrees " +
+                "roundedDeviceOrientation=$rounded sensorOrientation=${cameraSource.sensorOrientation} " +
+                "lensFacing=${cameraSource.lensFacing} facingFront=$facingFront " +
+                "cameraXPreviewRotationDegrees(unused-for-hint)=${renderer.rotationDegrees} " +
+                "rawHint=$rawHint -> calibratedHint=$hint"
+        )
+        return hint
+    }
+
     private fun capturePhoto() {
         animateCaptureButtonPress()
         val outputSize = computeOutputSize()
+        renderer.logRotationDebugSnapshot("photoCapture")
         renderer.capturePhoto(outputSize.width, outputSize.height) { bitmap ->
             if (bitmap == null) {
                 runOnUiThread {
@@ -233,7 +289,16 @@ class MainActivity : AppCompatActivity() {
                 }
                 return@capturePhoto
             }
-            savePhoto(bitmap)
+            val hint = computeOrientationHint()
+            val oriented = if (hint == 0) {
+                bitmap
+            } else {
+                val matrix = android.graphics.Matrix().apply { postRotate(hint.toFloat()) }
+                val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                bitmap.recycle()
+                rotated
+            }
+            savePhoto(oriented)
         }
     }
 
@@ -307,7 +372,10 @@ class MainActivity : AppCompatActivity() {
         renderer.attachEncoderSurface(encoderSurface, outputSize.width, outputSize.height)
         recorder = newRecorder
 
-        newRecorder.start(config, renderer.rotationDegrees, object : StretchRecorder.Callback {
+        val orientationHint = computeOrientationHint()
+        renderer.logRotationDebugSnapshot("recordingStart")
+
+        newRecorder.start(config, orientationHint, object : StretchRecorder.Callback {
             override fun onSaved(uri: Uri, displayName: String) {
                 runOnUiThread {
                     Log.i(TAG, "Saved $displayName at encoded size ${config.outputWidth}x${config.outputHeight} (mode=${renderer.mode})")
@@ -353,8 +421,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        orientationEventListener.enable()
+    }
+
     override fun onPause() {
         super.onPause()
+        orientationEventListener.disable()
         if (isRecording) stopRecording()
     }
 

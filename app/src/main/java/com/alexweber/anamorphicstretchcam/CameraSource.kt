@@ -5,8 +5,10 @@ import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.params.StreamConfigurationMap
+import android.hardware.display.DisplayManager
 import android.util.Log
 import android.util.Size
+import android.view.Display
 import android.view.Surface
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.core.CameraSelector
@@ -46,13 +48,47 @@ class CameraSource(
     private var onReadyCallback: ((Size) -> Unit)? = null
     private var currentSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
+    private val displayManager: DisplayManager by lazy {
+        context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+    }
+    private var displayListenerRegistered = false
+
+    // Preview.targetRotation is only set once, from the display rotation at Preview.Builder()
+    // .build() time - CameraX does NOT keep it in sync with later display rotation changes on
+    // its own (confirmed: TransformationInfoListener never re-fired here across two live device
+    // rotations with rotation-lock off). Without this listener explicitly re-pushing the current
+    // display rotation, the preview's rotation compensation stays frozen at whatever it was when
+    // the camera was first bound.
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId != Display.DEFAULT_DISPLAY) return
+            val rotation = displayManager.getDisplay(displayId).rotation
+            Log.d(TAG, "ROTATION_DEBUG display rotation changed -> Surface.ROTATION_*=$rotation, pushing to Preview.targetRotation")
+            preview?.targetRotation = rotation
+        }
+    }
+
     /** Native sensor-reported size chosen for capture; set once [start] resolves it. */
     var captureSize: Size = Size(1920, 1080)
+        private set
+
+    /** [CameraCharacteristics.LENS_FACING] of the currently bound camera. */
+    var lensFacing: Int = CameraCharacteristics.LENS_FACING_BACK
+        private set
+
+    /** [CameraCharacteristics.SENSOR_ORIENTATION] of the currently bound camera, in degrees. */
+    var sensorOrientation: Int = 0
         private set
 
     fun start(surfaceTexture: SurfaceTexture, onReady: (Size) -> Unit) {
         this.surfaceTexture = surfaceTexture
         this.onReadyCallback = onReady
+        if (!displayListenerRegistered) {
+            displayManager.registerDisplayListener(displayListener, null)
+            displayListenerRegistered = true
+        }
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
             cameraProvider = providerFuture.get()
@@ -79,6 +115,7 @@ class CameraSource(
         val provider = cameraProvider ?: return
         val texture = surfaceTexture ?: return
         currentSelector = cameraSelector
+        updateCameraCharacteristics(provider, cameraSelector)
 
         // Preferred size comes straight from the sensor's own StreamConfigurationMap, not
         // from AndroidX's AspectRatio.RATIO_16_9 / RATIO_4_3 constants. We still hand it to
@@ -95,6 +132,10 @@ class CameraSource(
         val previewUseCase = Preview.Builder()
             .setResolutionSelector(resolutionSelector)
             .build()
+        // Explicitly push the *current* display rotation rather than trusting whatever default
+        // Preview.Builder() picked up - closes the gap between camera bind time and whenever the
+        // displayListener's first onDisplayChanged() happens to fire.
+        previewUseCase.targetRotation = displayManager.getDisplay(Display.DEFAULT_DISPLAY).rotation
         previewUseCase.setSurfaceProvider { request: SurfaceRequest ->
             request.setTransformationInfoListener(mainExecutor) { info ->
                 rotationListener?.onRotationChanged(info.rotationDegrees)
@@ -119,7 +160,28 @@ class CameraSource(
         provider.bindToLifecycle(lifecycleOwner, cameraSelector, previewUseCase)
     }
 
+    private fun updateCameraCharacteristics(provider: ProcessCameraProvider, selector: CameraSelector) {
+        val characteristics = cameraCharacteristics(provider, selector) ?: return
+        lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING) ?: CameraCharacteristics.LENS_FACING_BACK
+        sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        Log.d(TAG, "ROTATION_DEBUG bound camera: lensFacing=$lensFacing sensorOrientation=$sensorOrientation")
+    }
+
+    private fun cameraCharacteristics(
+        provider: ProcessCameraProvider,
+        selector: CameraSelector
+    ): CameraCharacteristics? {
+        val cameraInfo = selector.filter(provider.availableCameraInfos).firstOrNull() ?: return null
+        val cameraId = Camera2CameraInfo.from(cameraInfo).cameraId
+        val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        return cameraManager.getCameraCharacteristics(cameraId)
+    }
+
     fun stop() {
+        if (displayListenerRegistered) {
+            displayManager.unregisterDisplayListener(displayListener)
+            displayListenerRegistered = false
+        }
         cameraProvider?.unbindAll()
         cameraProvider = null
         preview = null
@@ -133,11 +195,7 @@ class CameraSource(
      * and encoder stay real-time on device.
      */
     private fun pickNativeSensorSize(provider: ProcessCameraProvider, selector: CameraSelector): Size {
-        val cameraInfo = selector.filter(provider.availableCameraInfos).firstOrNull()
-            ?: return Size(1920, 1080)
-        val cameraId = Camera2CameraInfo.from(cameraInfo).cameraId
-        val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+        val characteristics = cameraCharacteristics(provider, selector) ?: return Size(1920, 1080)
         val map: StreamConfigurationMap =
             characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 ?: return Size(1920, 1080)
