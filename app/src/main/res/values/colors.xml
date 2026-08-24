@@ -5,4 +5,7 @@
     <color name="rec_red">#FFE53935</color>
     <color name="accent">#FF00E5A0</color>
     <color name="overlay_bg">#B3000000</color>
+    <color name="chrome_bg">#E6000000</color>
+    <color name="chrome_stroke">#4DFFFFFF</color>
+    <color name="icon_bg">#33FFFFFF</color>
 </resources>
