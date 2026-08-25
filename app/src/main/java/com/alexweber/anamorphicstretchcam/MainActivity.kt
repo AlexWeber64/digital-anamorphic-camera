@@ -51,17 +51,16 @@ class MainActivity : AppCompatActivity() {
     /** Clockwise device rotation from natural orientation, tracked live from the accelerometer.
      *  The app's window is locked to portrait (see AndroidManifest.xml) precisely so the OS
      *  never re-flows the control chrome on rotation - this is the only rotation signal in the
-     *  app, driving both the live preview's GL rotation and the individual chrome glyphs'
-     *  counter-rotation, entirely independent of any window/display-rotation event. */
+     *  app. It drives the calibrated hint used for the muxer orientation hint / still-photo
+     *  rotation (see [computeOrientationHint]) and the icon-only chrome glyphs' counter-rotation
+     *  (see [applyChromeCounterRotation]); it deliberately does NOT drive any rotation of the
+     *  live camera feed itself, which is meant to tilt with the physical device like a real
+     *  optical viewfinder rather than auto-level (see StretchGLRenderer's class doc). */
     private var deviceOrientationDegrees = 0
 
     /** Last chrome-glyph rotation angle actually applied, so glyph views are only re-animated
      *  when the snapped-to-90 orientation actually changes, not on every accelerometer tick. */
     private var lastAppliedChromeRotation = 0
-
-    /** TEMPORARY diagnostic: last renderer.rotationDegrees value we logged, so the live-preview
-     *  investigation log only fires on actual changes instead of every accelerometer tick. */
-    private var lastLoggedRendererRotationHint = Int.MIN_VALUE
 
     /** Chrome glyph views that must counter-rotate in place to stay upright as the device
      *  physically rotates, while their containing chrome panel stays docked. Text-bearing
@@ -76,20 +75,10 @@ class MainActivity : AppCompatActivity() {
                 if (orientation == ORIENTATION_UNKNOWN) return
                 deviceOrientationDegrees = orientation
                 val rounded = roundToNearest90(orientation)
-                val hint = rawOrientationHint(rounded)
-                renderer.rotationDegrees = hint
-                // TEMPORARY diagnostic for the "live preview doesn't rotate before recording"
-                // investigation: logs every time the value actually pushed into the renderer
-                // changes, regardless of recording state, so we can see whether this callback
-                // keeps firing/updating during idle preview or only around record-press time.
-                if (hint != lastLoggedRendererRotationHint) {
-                    lastLoggedRendererRotationHint = hint
-                    Log.d(
-                        TAG,
-                        "ROTATION_DEBUG[orientationListener] isRecording=$isRecording rawOrientation=$orientation " +
-                            "roundedOrientation=$rounded -> renderer.rotationDegrees=$hint"
-                    )
-                }
+                // Kept live regardless of recording state: this only feeds the calibrated
+                // muxer/photo-rotation hint (computeOrientationHint()/correctedRotationDegrees()),
+                // never the live preview, which never rotates - see StretchGLRenderer's class doc.
+                renderer.rotationDegrees = rawOrientationHint(rounded)
                 if (rounded != lastAppliedChromeRotation) {
                     lastAppliedChromeRotation = rounded
                     applyChromeCounterRotation(rounded)
