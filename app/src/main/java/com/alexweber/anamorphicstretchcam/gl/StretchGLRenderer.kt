@@ -85,6 +85,11 @@ class StretchGLRenderer {
      *  encoder sees a stream starting at 0 instead of raw device-boot-relative nanos. */
     private var encoderTimestampBaseNanos: Long = NO_BASELINE
 
+    /** TEMPORARY diagnostic fields for the "live preview doesn't rotate before recording"
+     *  investigation - see the logging in [drawToSurface]. */
+    private var previewDrawFrameCount: Long = 0
+    private var lastLoggedPreviewCorrectedRotation: Int = Int.MIN_VALUE
+
     fun start(listener: Listener) {
         this.listener = listener
         thread.start()
@@ -287,6 +292,30 @@ class StretchGLRenderer {
 
         Matrix.setIdentityM(mvpMatrix, 0)
         val corrected = correctedRotationDegrees()
+        // TEMPORARY diagnostic for the "live preview doesn't rotate before recording"
+        // investigation: proves whether this draw call - which is what actually renders the
+        // on-screen preview - is (a) still running at all during idle/pre-recording, and
+        // (b) ever seeing rotationDegrees/correctedRotationDegrees() change over time, as
+        // opposed to only ever reading a value that was set once at some earlier point.
+        if (applyRotation) {
+            previewDrawFrameCount++
+            if (corrected != lastLoggedPreviewCorrectedRotation) {
+                lastLoggedPreviewCorrectedRotation = corrected
+                Log.d(
+                    TAG,
+                    "ROTATION_DEBUG[previewDraw] frame=$previewDrawFrameCount rotationDegrees=$rotationDegrees " +
+                        "facingFront=$facingFront correctedRotationDegrees=$corrected (CHANGED)"
+                )
+            } else if (previewDrawFrameCount % 120 == 0L) {
+                // Heartbeat every ~120 preview frames so we can tell "draw loop alive but value
+                // never changes" apart from "draw loop isn't running at all" in the log.
+                Log.d(
+                    TAG,
+                    "ROTATION_DEBUG[previewDraw] frame=$previewDrawFrameCount rotationDegrees=$rotationDegrees " +
+                        "correctedRotationDegrees=$corrected (heartbeat, unchanged)"
+                )
+            }
+        }
         if (applyRotation && corrected != 0) {
             Matrix.rotateM(mvpMatrix, 0, -corrected.toFloat(), 0f, 0f, 1f)
         }

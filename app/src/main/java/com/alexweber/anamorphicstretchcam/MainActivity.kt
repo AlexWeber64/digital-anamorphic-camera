@@ -59,14 +59,16 @@ class MainActivity : AppCompatActivity() {
      *  when the snapped-to-90 orientation actually changes, not on every accelerometer tick. */
     private var lastAppliedChromeRotation = 0
 
-    /** Chrome glyph views (icons/labels) that must counter-rotate in place to stay upright as
-     *  the device physically rotates, while their containing chrome panel stays docked. */
-    private val rotatingChromeViews = mutableListOf<android.view.View>()
+    /** TEMPORARY diagnostic: last renderer.rotationDegrees value we logged, so the live-preview
+     *  investigation log only fires on actual changes instead of every accelerometer tick. */
+    private var lastLoggedRendererRotationHint = Int.MIN_VALUE
 
-    /** True when the chrome glyphs are currently rotated 90/270 (their text is now vertical),
-     *  meaning each glyph's own container bounds must be swapped (width<->height) to match -
-     *  see [applySwappedBounds]. */
-    private var chromeBoundsSwapped = false
+    /** Chrome glyph views that must counter-rotate in place to stay upright as the device
+     *  physically rotates, while their containing chrome panel stays docked. Text-bearing
+     *  controls (scale readout, mode-toggle labels) are deliberately excluded - only icon-only
+     *  controls (the camera-flip icon) rotate, matching native camera apps; text stays upright
+     *  in its normal screen position and is never rotated. */
+    private val rotatingChromeViews = mutableListOf<android.view.View>()
 
     private val orientationEventListener by lazy {
         object : OrientationEventListener(this) {
@@ -74,7 +76,20 @@ class MainActivity : AppCompatActivity() {
                 if (orientation == ORIENTATION_UNKNOWN) return
                 deviceOrientationDegrees = orientation
                 val rounded = roundToNearest90(orientation)
-                renderer.rotationDegrees = rawOrientationHint(rounded)
+                val hint = rawOrientationHint(rounded)
+                renderer.rotationDegrees = hint
+                // TEMPORARY diagnostic for the "live preview doesn't rotate before recording"
+                // investigation: logs every time the value actually pushed into the renderer
+                // changes, regardless of recording state, so we can see whether this callback
+                // keeps firing/updating during idle preview or only around record-press time.
+                if (hint != lastLoggedRendererRotationHint) {
+                    lastLoggedRendererRotationHint = hint
+                    Log.d(
+                        TAG,
+                        "ROTATION_DEBUG[orientationListener] isRecording=$isRecording rawOrientation=$orientation " +
+                            "roundedOrientation=$rounded -> renderer.rotationDegrees=$hint"
+                    )
+                }
                 if (rounded != lastAppliedChromeRotation) {
                     lastAppliedChromeRotation = rounded
                     applyChromeCounterRotation(rounded)
@@ -227,10 +242,6 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.mode_squeeze)
         }
         binding.scaleReadout.text = String.format(Locale.US, "%.1fx %s", renderer.scale, modeLabel.uppercase())
-        // Text length changes here (e.g. "STRETCH" <-> "SQUEEZE"), so re-apply the current
-        // swap state - not just re-run it on the next rotation change - or a label change while
-        // already rotated 90/270 would clip against a stale natural-size measurement.
-        applySwappedBounds(binding.scaleReadout, chromeBoundsSwapped)
     }
 
     private fun initPipeline() {
@@ -301,20 +312,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Registers the chrome glyph views that must counter-rotate to stay upright in place while
-     *  their containing chrome panel stays docked to the physical device edge (see Goal 2 in the
-     *  UI-overhaul spec: the panel never re-flows, only the glyphs inside it rotate). */
+     *  their containing chrome panel stays docked to the physical device edge. Only the
+     *  icon-only camera-flip button rotates - text-bearing controls (scale readout, mode-toggle
+     *  labels) are intentionally not registered here; they stay upright in their normal screen
+     *  position, matching native camera apps (e.g. Samsung's), which never rotate on-screen
+     *  text, only icon glyphs. */
     private fun setupChromeRotation() {
-        rotatingChromeViews.addAll(
-            listOf(
-                binding.timerText,
-                binding.scaleReadout,
-                binding.cameraSwitchButton,
-                binding.captureModeVideoButton,
-                binding.captureModePhotoButton,
-                binding.modeStretchButton,
-                binding.modeSqueezeButton
-            )
-        )
+        rotatingChromeViews.addAll(listOf(binding.cameraSwitchButton))
     }
 
     /** Counter-rotates every registered chrome glyph by the angle documented on
@@ -324,41 +328,8 @@ class MainActivity : AppCompatActivity() {
      *  rotation convention. */
     private fun applyChromeCounterRotation(roundedDeviceOrientation: Int) {
         val angle = -roundedDeviceOrientation.toFloat()
-        chromeBoundsSwapped = roundedDeviceOrientation == 90 || roundedDeviceOrientation == 270
         rotatingChromeViews.forEach { view ->
-            applySwappedBounds(view, chromeBoundsSwapped)
             view.animate().rotation(angle).setDuration(250).start()
-        }
-    }
-
-    /**
-     * Fixes a real clipping bug, not a cosmetic one: [android.view.View.setRotation] only
-     * rotates the *rendered pixels* - it never touches the view's own measured/laid-out
-     * width/height. A wrap_content pill sized for horizontal text ("2.0x STRETCH") keeps
-     * exactly that wide-and-short box after rotating 90 degrees, so the parent still clips
-     * child drawing to that box's *original* (unrotated) rectangle - the now-vertical text
-     * gets cropped to whatever fit in the old horizontal box ("STRETCH" -> "STRETC"). Swapping
-     * the view's own layoutParams width/height to match its *rotated* footprint makes that
-     * clip rectangle match the rotated content instead, eliminating the clipping.
-     *
-     * Re-measures the view's natural (unrotated) intrinsic size fresh every call - rather than
-     * caching it once - since content like [scaleReadout]'s text ("1.0x STRETCH" vs
-     * "4.0x SQUEEZE") changes length at runtime; a stale cached size would clip again as soon
-     * as a longer label was selected while already rotated.
-     */
-    private fun applySwappedBounds(view: android.view.View, swapped: Boolean) {
-        val lp = view.layoutParams ?: return
-        val unspecified = android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED)
-        view.measure(unspecified, unspecified)
-        val naturalWidth = view.measuredWidth
-        val naturalHeight = view.measuredHeight
-        if (naturalWidth <= 0 || naturalHeight <= 0) return
-        val targetWidth = if (swapped) naturalHeight else naturalWidth
-        val targetHeight = if (swapped) naturalWidth else naturalHeight
-        if (lp.width != targetWidth || lp.height != targetHeight) {
-            lp.width = targetWidth
-            lp.height = targetHeight
-            view.layoutParams = lp
         }
     }
 
