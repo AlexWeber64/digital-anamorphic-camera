@@ -31,11 +31,19 @@ import java.util.concurrent.CountDownLatch
  *    scaled by 1/scale on both destinations, compressing the image toward the center -
  *    approximating raw (undesqueezed) anamorphic-lens footage.
  *
- * Device-rotation compensation is only applied to the *preview* destination, so the
- * monitor matches how the phone is being held. The encoder destination is left
- * untouched and MediaMuxer.setOrientationHint() (set by StretchRecorder) carries the
- * playback rotation instead - that's a standard orientation hint, unrelated to the
- * anamorphic distortion itself, which stays a real per-pixel transform.
+ * No device-rotation compensation is baked into *either* destination's pixels - both the
+ * on-screen preview and the encoder show/encode the raw sensor-oriented feed as-is (only the
+ * anamorphic stretch/squeeze is a real per-pixel transform). This is deliberate: like a real
+ * camera's optical viewfinder, the live preview should visually tilt along with the physical
+ * device rather than auto-leveling itself, matching native camera apps. Orientation is instead
+ * communicated entirely after the fact - MediaMuxer.setOrientationHint() (set by
+ * StretchRecorder) for video, and a post-capture Bitmap rotation (in MainActivity) for stills -
+ * both driven by [rotationDegrees]/[correctedRotationDegrees], which stay live even though
+ * they no longer affect anything drawn to screen.
+ *
+ * The app's window is locked to portrait (see AndroidManifest.xml) so its control chrome
+ * never re-flows when the device physically rotates - only individual icon-only chrome glyphs
+ * (not text) counter-rotate in place (see MainActivity), unrelated to the camera feed itself.
  */
 class StretchGLRenderer {
 
@@ -47,6 +55,10 @@ class StretchGLRenderer {
 
     @Volatile var scale: Float = 2.0f
     @Volatile var mode: Mode = Mode.STRETCH
+    /** Raw (uncalibrated) sensor-orientation-adjusted hint, updated live from MainActivity's
+     *  OrientationEventListener on every accelerometer-reported orientation change. Feeds only
+     *  [correctedRotationDegrees] (used for the muxer orientation hint / still-photo rotation
+     *  after capture) - it does not affect anything drawn to the live preview or encoder. */
     @Volatile var rotationDegrees: Int = 0
     /** Whether the currently-bound camera is front-facing - the calibration in
      *  [correctedRotationDegrees] is mirrored for front cameras (confirmed on-device: the same
@@ -185,18 +197,17 @@ class StretchGLRenderer {
     }
 
     /**
-     * TEMPORARY diagnostic: dumps the exact GL-side state feeding both destinations, so we can
-     * see whether the SurfaceTexture transform itself (not just the rotationDegrees hint) is
-     * contributing an unexpected rotation. Runs on the GL thread; safe to call from any thread.
+     * Permanent diagnostic: dumps the GL-side state feeding both destinations - neither bakes in
+     * any rotation (see class doc), so this mainly confirms the calibrated hint that's about to
+     * be handed to the muxer/photo-rotation step, plus the raw SurfaceTexture transform, in case
+     * a future device shows an unexpected texMatrix again. Runs on the GL thread; safe to call
+     * from any thread.
      */
     fun logRotationDebugSnapshot(callSite: String) {
         handler.post {
             val corrected = correctedRotationDegrees()
             val screenMvp = FloatArray(16)
             Matrix.setIdentityM(screenMvp, 0)
-            if (corrected != 0) {
-                Matrix.rotateM(screenMvp, 0, -corrected.toFloat(), 0f, 0f, 1f)
-            }
             val screenSx = when (mode) {
                 Mode.STRETCH -> scale
                 Mode.SQUEEZE -> 1f / scale
@@ -218,12 +229,12 @@ class StretchGLRenderer {
             // `findstr`/`grep` silently drop every continuation line.
             Log.d(
                 TAG,
-                "ROTATION_DEBUG[$callSite] rotationDegrees=$rotationDegrees facingFront=$facingFront correctedRotationDegrees=$corrected " +
+                "ROTATION_DEBUG[$callSite] rotationDegrees=$rotationDegrees facingFront=$facingFront correctedRotationDegrees(muxer/photo hint only)=$corrected " +
                     "mode=$mode scale=$scale screenSurfaceAttached=${screenSurface != null} encoderSurfaceAttached=${encoderSurface != null}"
             )
             Log.d(TAG, "ROTATION_DEBUG[$callSite] texMatrix (SurfaceTexture.getTransformMatrix(), shared by both destinations) = ${fmt(texMatrix)}")
-            Log.d(TAG, "ROTATION_DEBUG[$callSite] screen mvpMatrix (applyRotation=true, rotateM(-correctedRotationDegrees) then scaleM(sx,1,1)) = ${fmt(screenMvp)}")
-            Log.d(TAG, "ROTATION_DEBUG[$callSite] encoder mvpMatrix (applyRotation=false, no rotateM, scaleM(sx,1,1) only) = ${fmt(encoderMvp)}")
+            Log.d(TAG, "ROTATION_DEBUG[$callSite] screen mvpMatrix (no rotateM - preview never rotates - scaleM(sx,1,1) only) = ${fmt(screenMvp)}")
+            Log.d(TAG, "ROTATION_DEBUG[$callSite] encoder mvpMatrix (no rotateM, scaleM(sx,1,1) only) = ${fmt(encoderMvp)}")
             Log.d(TAG, "ROTATION_DEBUG[$callSite] vertex shader applies: gl_Position = mvpMatrix * aPosition; vTextureCoord = (texMatrix * aTextureCoord).xy")
         }
     }
@@ -248,11 +259,11 @@ class StretchGLRenderer {
         texture.getTransformMatrix(texMatrix)
 
         screenSurface?.let {
-            drawToSurface(it, applyRotation = true)
+            drawToSurface(it, isScreenTarget = true)
             it.swapBuffers()
         }
         encoderSurface?.let {
-            drawToSurface(it, applyRotation = false)
+            drawToSurface(it, isScreenTarget = false)
             // texture.timestamp is nanoseconds since device boot, not since recording start;
             // MediaCodec expects a stream starting at (or near) 0, so the first frame observed
             // after attaching the encoder surface becomes the baseline for every frame after it.
@@ -267,7 +278,15 @@ class StretchGLRenderer {
         }
     }
 
-    private fun drawToSurface(target: WindowSurface, applyRotation: Boolean) {
+    /**
+     * Draws the current camera frame to [target] with no rotation baked in - see the class doc
+     * for why: the live preview is meant to tilt with the physical device like a real optical
+     * viewfinder, not auto-level itself. [isScreenTarget] only controls how the anamorphic
+     * stretch is applied: the screen's WindowSurface is always the device's fixed physical
+     * size, so STRETCH is applied here as a matrix scale; the encoder's WindowSurface is instead
+     * created pre-widened for STRETCH (see class doc), so no extra scale is needed there.
+     */
+    private fun drawToSurface(target: WindowSurface, isScreenTarget: Boolean) {
         val prog = program ?: return
         target.makeCurrent()
         GLES20.glViewport(0, 0, target.width, target.height)
@@ -275,12 +294,8 @@ class StretchGLRenderer {
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
         Matrix.setIdentityM(mvpMatrix, 0)
-        val corrected = correctedRotationDegrees()
-        if (applyRotation && corrected != 0) {
-            Matrix.rotateM(mvpMatrix, 0, -corrected.toFloat(), 0f, 0f, 1f)
-        }
         val sx = when (mode) {
-            Mode.STRETCH -> if (applyRotation) scale else 1f
+            Mode.STRETCH -> if (isScreenTarget) scale else 1f
             Mode.SQUEEZE -> 1f / scale
         }
         Matrix.scaleM(mvpMatrix, 0, sx, 1f, 1f)
@@ -308,9 +323,12 @@ class StretchGLRenderer {
      * sign for front vs. back (mirrored sensor mounting).
      *
      * See [MainActivity.computeOrientationHint] for the matching correction applied to the
-     * recorded file/photo orientation.
+     * recorded file/photo orientation. Public because MainActivity also calls this directly
+     * as the single source of truth for the calibrated hint (rather than duplicating the
+     * calibration formula), now that [rotationDegrees] is accelerometer-driven rather than
+     * display-rotation-driven.
      */
-    private fun correctedRotationDegrees(): Int {
+    fun correctedRotationDegrees(): Int {
         return if (facingFront) {
             ((FRONT_ROTATION_CALIBRATION_BASE_DEGREES - rotationDegrees) % 360 + 360) % 360
         } else {
