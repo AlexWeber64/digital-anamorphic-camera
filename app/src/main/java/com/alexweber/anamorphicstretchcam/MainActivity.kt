@@ -48,14 +48,40 @@ class MainActivity : AppCompatActivity() {
     private var captureMode = CaptureMode.VIDEO
     private var pipelineInitialized = false
 
-    /** Clockwise device rotation from natural orientation, tracked live from the accelerometer
-     *  so recorded orientation stays correct even if the activity's display rotation is locked. */
+    /** Clockwise device rotation from natural orientation, tracked live from the accelerometer.
+     *  The app's window is locked to portrait (see AndroidManifest.xml) precisely so the OS
+     *  never re-flows the control chrome on rotation - this is the only rotation signal in the
+     *  app. It drives the calibrated hint used for the muxer orientation hint / still-photo
+     *  rotation (see [computeOrientationHint]) and the icon-only chrome glyphs' counter-rotation
+     *  (see [applyChromeCounterRotation]); it deliberately does NOT drive any rotation of the
+     *  live camera feed itself, which is meant to tilt with the physical device like a real
+     *  optical viewfinder rather than auto-level (see StretchGLRenderer's class doc). */
     private var deviceOrientationDegrees = 0
+
+    /** Last chrome-glyph rotation angle actually applied, so glyph views are only re-animated
+     *  when the snapped-to-90 orientation actually changes, not on every accelerometer tick. */
+    private var lastAppliedChromeRotation = 0
+
+    /** Chrome glyph views that must counter-rotate in place to stay upright as the device
+     *  physically rotates, while their containing chrome panel stays docked. Text-bearing
+     *  controls (scale readout, mode-toggle labels) are deliberately excluded - only icon-only
+     *  controls (the camera-flip icon) rotate, matching native camera apps; text stays upright
+     *  in its normal screen position and is never rotated. */
+    private val rotatingChromeViews = mutableListOf<android.view.View>()
+
     private val orientationEventListener by lazy {
         object : OrientationEventListener(this) {
             override fun onOrientationChanged(orientation: Int) {
-                if (orientation != ORIENTATION_UNKNOWN) {
-                    deviceOrientationDegrees = orientation
+                if (orientation == ORIENTATION_UNKNOWN) return
+                deviceOrientationDegrees = orientation
+                val rounded = roundToNearest90(orientation)
+                // Kept live regardless of recording state: this only feeds the calibrated
+                // muxer/photo-rotation hint (computeOrientationHint()/correctedRotationDegrees()),
+                // never the live preview, which never rotates - see StretchGLRenderer's class doc.
+                renderer.rotationDegrees = rawOrientationHint(rounded)
+                if (rounded != lastAppliedChromeRotation) {
+                    lastAppliedChromeRotation = rounded
+                    applyChromeCounterRotation(rounded)
                 }
             }
         }
@@ -91,15 +117,10 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         cameraSource = CameraSource(this, this)
-        cameraSource.rotationListener = object : CameraSource.RotationListener {
-            override fun onRotationChanged(rotationDegrees: Int) {
-                Log.d(TAG, "ROTATION_DEBUG CameraX Preview TransformationInfo.rotationDegrees -> $rotationDegrees")
-                renderer.rotationDegrees = rotationDegrees
-            }
-        }
 
         setupControls()
         setupPreviewSurface()
+        setupChromeRotation()
 
         initPipelineIfNeeded()
         // Camera permission alone is enough to start the pipeline (see initPipelineIfNeeded),
@@ -240,42 +261,65 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Snaps a raw 0-359 accelerometer orientation reading to the nearest multiple of 90. */
+    private fun roundToNearest90(orientation: Int): Int {
+        var rounded = ((orientation + 45) / 90 * 90) % 360
+        if (rounded < 0) rounded += 360
+        return rounded
+    }
+
     /**
-     * Computes the clockwise rotation (0/90/180/270) needed to display a sensor-orientation
-     * buffer correctly, from the live accelerometer-based device orientation plus the active
-     * camera's SENSOR_ORIENTATION/LENS_FACING - the same formula documented on
-     * [CameraCharacteristics.SENSOR_ORIENTATION]. Used for both the MediaMuxer orientation hint
-     * and the still-photo rotation, so both stay correct even if the display's own rotation is
-     * locked (e.g. holding the phone sideways to record landscape footage from a portrait-locked
-     * UI).
-     *
-     * The raw formula result is then adjusted per [StretchGLRenderer.correctedRotationDegrees] -
-     * on-device testing (logcat ROTATION_DEBUG trace, not a formula guess) showed a *constant*
-     * offset error for the back camera (fixed by [StretchGLRenderer.ROTATION_CALIBRATION_OFFSET_DEGREES])
-     * and a differently-signed error for the front camera (fixed by mirroring around
-     * [StretchGLRenderer.FRONT_ROTATION_CALIBRATION_BASE_DEGREES]) - both confirmed correct in
-     * portrait and after a live rotation to landscape.
+     * Raw (uncalibrated) clockwise rotation needed to display a sensor-orientation buffer
+     * correctly, from a snapped accelerometer orientation plus the active camera's
+     * SENSOR_ORIENTATION/LENS_FACING - the same formula documented on
+     * [CameraCharacteristics.SENSOR_ORIENTATION]. Fed into [StretchGLRenderer.rotationDegrees]
+     * live on every orientation change; [StretchGLRenderer.correctedRotationDegrees] then applies
+     * the on-device-calibrated correction on top (see that function's doc for why).
+     */
+    private fun rawOrientationHint(roundedDeviceOrientation: Int): Int {
+        val facingFront = cameraSource.lensFacing == CameraCharacteristics.LENS_FACING_FRONT
+        val signedOrientation = if (facingFront) -roundedDeviceOrientation else roundedDeviceOrientation
+        return ((cameraSource.sensorOrientation + signedOrientation) % 360 + 360) % 360
+    }
+
+    /**
+     * The calibrated hint used for the MediaMuxer orientation hint and the still-photo rotation -
+     * delegates to [StretchGLRenderer.correctedRotationDegrees] (the same value already driving
+     * the live preview's GL rotation) rather than duplicating the calibration formula, so both
+     * stay correct and consistent even if the display's own rotation is locked (e.g. holding the
+     * phone sideways to record landscape footage from this portrait-locked UI).
      */
     private fun computeOrientationHint(): Int {
-        var rounded = ((deviceOrientationDegrees + 45) / 90 * 90) % 360
-        if (rounded < 0) rounded += 360
-        val facingFront = cameraSource.lensFacing == CameraCharacteristics.LENS_FACING_FRONT
-        val signedOrientation = if (facingFront) -rounded else rounded
-        val rawHint = ((cameraSource.sensorOrientation + signedOrientation) % 360 + 360) % 360
-        val hint = if (facingFront) {
-            ((StretchGLRenderer.FRONT_ROTATION_CALIBRATION_BASE_DEGREES - rawHint) % 360 + 360) % 360
-        } else {
-            ((rawHint - StretchGLRenderer.ROTATION_CALIBRATION_OFFSET_DEGREES) % 360 + 360) % 360
-        }
+        val hint = renderer.correctedRotationDegrees()
         Log.d(
             TAG,
             "ROTATION_DEBUG computeOrientationHint(): rawDeviceOrientation=$deviceOrientationDegrees " +
-                "roundedDeviceOrientation=$rounded sensorOrientation=${cameraSource.sensorOrientation} " +
-                "lensFacing=${cameraSource.lensFacing} facingFront=$facingFront " +
-                "cameraXPreviewRotationDegrees(unused-for-hint)=${renderer.rotationDegrees} " +
-                "rawHint=$rawHint -> calibratedHint=$hint"
+                "sensorOrientation=${cameraSource.sensorOrientation} lensFacing=${cameraSource.lensFacing} " +
+                "rendererRotationDegrees(raw)=${renderer.rotationDegrees} -> calibratedHint=$hint"
         )
         return hint
+    }
+
+    /** Registers the chrome glyph views that must counter-rotate to stay upright in place while
+     *  their containing chrome panel stays docked to the physical device edge. Only the
+     *  icon-only camera-flip button rotates - text-bearing controls (scale readout, mode-toggle
+     *  labels) are intentionally not registered here; they stay upright in their normal screen
+     *  position, matching native camera apps (e.g. Samsung's), which never rotate on-screen
+     *  text, only icon glyphs. */
+    private fun setupChromeRotation() {
+        rotatingChromeViews.addAll(listOf(binding.cameraSwitchButton))
+    }
+
+    /** Counter-rotates every registered chrome glyph by the angle documented on
+     *  [OrientationEventListener.onOrientationChanged]: content should be rotated by
+     *  `360 - orientation` degrees to appear upright regardless of physical device orientation -
+     *  equivalently, `-roundedDeviceOrientation` on [android.view.View.animate]'s CW-positive
+     *  rotation convention. */
+    private fun applyChromeCounterRotation(roundedDeviceOrientation: Int) {
+        val angle = -roundedDeviceOrientation.toFloat()
+        rotatingChromeViews.forEach { view ->
+            view.animate().rotation(angle).setDuration(250).start()
+        }
     }
 
     private fun capturePhoto() {
