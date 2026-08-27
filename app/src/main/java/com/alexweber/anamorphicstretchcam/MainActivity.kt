@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
+import android.graphics.Typeface
 import android.hardware.camera2.CameraCharacteristics
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -186,16 +187,8 @@ class MainActivity : AppCompatActivity() {
         }
         binding.modeStretchButton.isChecked = true
 
-        binding.captureModeToggleGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
-            if (!isChecked) return@addOnButtonCheckedListener
-            captureMode = if (checkedId == binding.captureModeVideoButton.id) {
-                CaptureMode.VIDEO
-            } else {
-                CaptureMode.PHOTO
-            }
-            updateCaptureModeUi()
-        }
-        binding.captureModeVideoButton.isChecked = true
+        binding.captureModeVideoLabel.setOnClickListener { setCaptureMode(CaptureMode.VIDEO) }
+        binding.captureModePhotoLabel.setOnClickListener { setCaptureMode(CaptureMode.PHOTO) }
 
         binding.recordButton.setOnClickListener {
             when (captureMode) {
@@ -212,6 +205,11 @@ class MainActivity : AppCompatActivity() {
         updateCaptureModeUi()
     }
 
+    private fun setCaptureMode(mode: CaptureMode) {
+        captureMode = mode
+        updateCaptureModeUi()
+    }
+
     private fun updateCaptureModeUi() {
         if (captureMode == CaptureMode.PHOTO) {
             binding.recordButton.setBackgroundResource(R.drawable.record_button_photo)
@@ -222,6 +220,17 @@ class MainActivity : AppCompatActivity() {
             )
             binding.recordButton.contentDescription = getString(R.string.record_start)
         }
+
+        // Plain-text mode labels: active is bold/white, inactive is dimmed - no border on either.
+        val videoActive = captureMode == CaptureMode.VIDEO
+        binding.captureModeVideoLabel.setTypeface(null, if (videoActive) Typeface.BOLD else Typeface.NORMAL)
+        binding.captureModeVideoLabel.setTextColor(
+            getColor(if (videoActive) R.color.white else R.color.mode_label_inactive)
+        )
+        binding.captureModePhotoLabel.setTypeface(null, if (videoActive) Typeface.NORMAL else Typeface.BOLD)
+        binding.captureModePhotoLabel.setTextColor(
+            getColor(if (videoActive) R.color.mode_label_inactive else R.color.white)
+        )
     }
 
     private fun updateScaleReadout() {
@@ -449,7 +458,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun setRecordingUiState(recording: Boolean) {
         binding.modeToggleGroup.children.forEach { it.isEnabled = !recording }
-        binding.captureModeToggleGroup.children.forEach { it.isEnabled = !recording }
+        binding.captureModeVideoLabel.isEnabled = !recording
+        binding.captureModePhotoLabel.isEnabled = !recording
         binding.cameraSwitchButton.isEnabled = !recording
         binding.recordButton.setBackgroundResource(
             if (recording) R.drawable.record_button_recording else R.drawable.record_button_idle

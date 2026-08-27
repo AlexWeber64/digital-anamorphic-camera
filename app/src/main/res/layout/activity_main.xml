@@ -70,60 +70,28 @@
         android:paddingTop="14dp"
         android:paddingBottom="22dp">
 
-        <!-- Vertical mode selector: capture mode above stretch/squeeze mode -->
-        <LinearLayout
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/modeToggleGroup"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
-            android:orientation="vertical">
+            app:singleSelection="true"
+            app:selectionRequired="true">
 
-            <com.google.android.material.button.MaterialButtonToggleGroup
-                android:id="@+id/captureModeToggleGroup"
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/modeStretchButton"
+                style="@style/Widget.AnamorphicCam.ModeButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="center_horizontal"
-                app:singleSelection="true"
-                app:selectionRequired="true">
+                android:text="@string/mode_stretch" />
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/captureModeVideoButton"
-                    style="@style/Widget.AnamorphicCam.ModeButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/capture_mode_video" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/captureModePhotoButton"
-                    style="@style/Widget.AnamorphicCam.ModeButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/capture_mode_photo" />
-            </com.google.android.material.button.MaterialButtonToggleGroup>
-
-            <com.google.android.material.button.MaterialButtonToggleGroup
-                android:id="@+id/modeToggleGroup"
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/modeSqueezeButton"
+                style="@style/Widget.AnamorphicCam.ModeButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="center_horizontal"
-                android:layout_marginTop="6dp"
-                app:singleSelection="true"
-                app:selectionRequired="true">
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/modeStretchButton"
-                    style="@style/Widget.AnamorphicCam.ModeButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/mode_stretch" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/modeSqueezeButton"
-                    style="@style/Widget.AnamorphicCam.ModeButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/mode_squeeze" />
-            </com.google.android.material.button.MaterialButtonToggleGroup>
-        </LinearLayout>
+                android:text="@string/mode_squeeze" />
+        </com.google.android.material.button.MaterialButtonToggleGroup>
 
         <com.google.android.material.slider.Slider
             android:id="@+id/scaleSlider"
@@ -137,6 +105,38 @@
             android:valueFrom="1.0"
             android:valueTo="4.0"
             android:value="2.0" />
+
+        <!-- Video/Photo mode selector: plain unboxed text labels, no border - matches native
+             camera apps' minimal mode chrome. Active label is bold/white, inactive is dimmed
+             (see MainActivity.updateCaptureModeUi()). Sits directly above the shutter row. -->
+        <LinearLayout
+            android:id="@+id/captureModeRow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="14dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/captureModeVideoLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="4dp"
+                android:text="@string/capture_mode_video"
+                android:textAllCaps="false"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/captureModePhotoLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="4dp"
+                android:text="@string/capture_mode_photo"
+                android:textAllCaps="false"
+                android:textSize="14sp" />
+        </LinearLayout>
 
         <!-- Shutter row: large circular shutter, small circular camera-flip icon docked beside it -->
         <FrameLayout
