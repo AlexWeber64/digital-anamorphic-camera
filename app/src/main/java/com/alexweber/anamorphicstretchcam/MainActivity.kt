@@ -372,7 +372,12 @@ class MainActivity : AppCompatActivity() {
      *  from MediaStore rather than trusting caller-passed state. */
     private fun refreshLastCaptureThumbnail() {
         Thread {
-            val latest = queryMostRecentCapture() ?: return@Thread
+            val latest = try {
+                queryMostRecentCapture()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to query last capture", t)
+                null
+            } ?: return@Thread
             val bitmap = try {
                 loadThumbnailBitmap(latest.uri, latest.isVideo)
             } catch (t: Throwable) {
@@ -403,7 +408,7 @@ class MainActivity : AppCompatActivity() {
             projection,
             "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?",
             arrayOf("ANAMORPHIC_%"),
-            "${MediaStore.MediaColumns.DATE_ADDED} DESC LIMIT 1"
+            "${MediaStore.MediaColumns.DATE_ADDED} DESC"
         )?.use { cursor ->
             if (cursor.moveToFirst()) {
                 val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
