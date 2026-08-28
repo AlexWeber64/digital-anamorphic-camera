@@ -10,23 +10,23 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Recording indicator + timer -->
+    <!-- Recording indicator + timer - counter-rotated as a unit to stay upright/readable -->
     <LinearLayout
         android:id="@+id/recIndicatorContainer"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|start"
         android:layout_margin="16dp"
-        android:background="@color/overlay_bg"
+        android:background="@drawable/pill_bg"
         android:orientation="horizontal"
-        android:paddingHorizontal="10dp"
+        android:paddingHorizontal="12dp"
         android:paddingVertical="6dp"
         android:visibility="invisible">
 
         <View
             android:id="@+id/recDot"
-            android:layout_width="10dp"
-            android:layout_height="10dp"
+            android:layout_width="9dp"
+            android:layout_height="9dp"
             android:layout_gravity="center_vertical"
             android:background="@drawable/rec_dot" />
 
@@ -38,76 +38,56 @@
             android:fontFamily="monospace"
             android:text="00:00"
             android:textColor="@color/white"
-            android:textSize="16sp" />
+            android:textSize="14sp" />
     </LinearLayout>
 
-    <!-- Current scale readout -->
+    <!-- Current scale readout - counter-rotated to stay upright/readable -->
     <TextView
         android:id="@+id/scaleReadout"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
         android:layout_margin="16dp"
-        android:background="@color/overlay_bg"
-        android:paddingHorizontal="10dp"
+        android:background="@drawable/pill_bg"
+        android:paddingHorizontal="12dp"
         android:paddingVertical="6dp"
         android:text="2.0x STRETCH"
         android:textColor="@color/accent"
-        android:textSize="16sp"
+        android:textSize="13sp"
         android:textStyle="bold" />
 
-    <!-- Bottom control panel -->
+    <!-- Bottom-docked control chrome - stays pinned to the physical bottom edge; only the
+         glyphs/labels inside individually counter-rotate (see MainActivity), the panel itself
+         never moves or re-flows when the device is physically rotated. -->
     <LinearLayout
         android:id="@+id/controlPanel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
-        android:background="@color/overlay_bg"
+        android:background="@color/chrome_bg"
         android:orientation="vertical"
-        android:padding="16dp">
-
-        <com.google.android.material.button.MaterialButtonToggleGroup
-            android:id="@+id/captureModeToggleGroup"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            app:singleSelection="true"
-            app:selectionRequired="true">
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/captureModeVideoButton"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/capture_mode_video" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/captureModePhotoButton"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/capture_mode_photo" />
-        </com.google.android.material.button.MaterialButtonToggleGroup>
+        android:paddingHorizontal="16dp"
+        android:paddingTop="14dp"
+        android:paddingBottom="22dp">
 
         <com.google.android.material.button.MaterialButtonToggleGroup
             android:id="@+id/modeToggleGroup"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
-            android:layout_marginTop="8dp"
             app:singleSelection="true"
             app:selectionRequired="true">
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/modeStretchButton"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                style="@style/Widget.AnamorphicCam.ModeButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/mode_stretch" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/modeSqueezeButton"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                style="@style/Widget.AnamorphicCam.ModeButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/mode_squeeze" />
@@ -117,34 +97,73 @@
             android:id="@+id/scaleSlider"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="10dp"
+            app:thumbColor="@color/white"
+            app:trackColorActive="@color/accent"
+            app:trackColorInactive="@color/chrome_stroke"
             android:stepSize="0.1"
             android:valueFrom="1.0"
             android:valueTo="4.0"
             android:value="2.0" />
 
+        <!-- Video/Photo mode selector: plain unboxed text labels, no border - matches native
+             camera apps' minimal mode chrome. Active label is bold/white and always centered;
+             the inactive label is dimmed and offset to the side (see
+             MainActivity.updateCaptureModeUi()) - both anchored to the same center point here
+             via layout_gravity="center" so a translationX of 0 always means true center,
+             regardless of which label that currently is. Sits directly above the shutter row. -->
         <FrameLayout
+            android:id="@+id/captureModeRow"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp">
+            android:layout_marginTop="14dp">
+
+            <TextView
+                android:id="@+id/captureModeVideoLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="4dp"
+                android:text="@string/capture_mode_video"
+                android:textAllCaps="false"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/captureModePhotoLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="4dp"
+                android:text="@string/capture_mode_photo"
+                android:textAllCaps="false"
+                android:textSize="14sp" />
+        </FrameLayout>
+
+        <!-- Shutter row: large circular shutter, small circular camera-flip icon docked beside it -->
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="88dp"
+            android:layout_marginTop="6dp">
 
             <ImageButton
                 android:id="@+id/recordButton"
-                android:layout_width="72dp"
-                android:layout_height="72dp"
+                android:layout_width="88dp"
+                android:layout_height="88dp"
                 android:layout_gravity="center"
                 android:background="@drawable/record_button_idle"
                 android:contentDescription="@string/record_start" />
 
             <ImageButton
                 android:id="@+id/cameraSwitchButton"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
+                android:layout_width="46dp"
+                android:layout_height="46dp"
                 android:layout_gravity="center_vertical|end"
-                android:layout_marginEnd="8dp"
-                android:background="@android:color/transparent"
+                android:layout_marginEnd="18dp"
+                android:background="@drawable/circle_icon_bg"
                 android:contentDescription="@string/switch_camera"
-                android:padding="8dp"
+                android:padding="10dp"
                 android:src="@drawable/ic_camera_switch" />
         </FrameLayout>
     </LinearLayout>
