@@ -1,7 +1,10 @@
 package com.alexweber.anamorphicstretchcam
 
 import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.ContentUris
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
@@ -47,6 +50,10 @@ class MainActivity : AppCompatActivity() {
     private var recordStartElapsedMs = 0L
     private var captureMode = CaptureMode.VIDEO
     private var pipelineInitialized = false
+
+    /** MediaStore URI of the most recent photo/video this app saved, shown in the last-capture
+     *  thumbnail button; null until [refreshLastCaptureThumbnail] finds one. */
+    private var lastCaptureUri: Uri? = null
 
     /** Clockwise device rotation from natural orientation, tracked live from the accelerometer.
      *  The app's window is locked to portrait (see AndroidManifest.xml) precisely so the OS
@@ -121,6 +128,7 @@ class MainActivity : AppCompatActivity() {
         setupControls()
         setupPreviewSurface()
         setupChromeRotation()
+        refreshLastCaptureThumbnail()
 
         initPipelineIfNeeded()
         // Camera permission alone is enough to start the pipeline (see initPipelineIfNeeded),
@@ -206,6 +214,10 @@ class MainActivity : AppCompatActivity() {
 
         binding.cameraSwitchButton.setOnClickListener {
             cameraSource.switchCamera()
+        }
+
+        binding.lastCaptureThumbnail.setOnClickListener {
+            openLastCapture()
         }
 
         updateScaleReadout()
@@ -301,13 +313,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Registers the chrome glyph views that must counter-rotate to stay upright in place while
-     *  their containing chrome panel stays docked to the physical device edge. Only the
-     *  icon-only camera-flip button rotates - text-bearing controls (scale readout, mode-toggle
-     *  labels) are intentionally not registered here; they stay upright in their normal screen
-     *  position, matching native camera apps (e.g. Samsung's), which never rotate on-screen
-     *  text, only icon glyphs. */
+     *  their containing chrome panel stays docked to the physical device edge. Only icon-only
+     *  controls (the camera-flip button, the last-capture thumbnail) rotate - text-bearing
+     *  controls (scale readout, mode-toggle labels) are intentionally not registered here; they
+     *  stay upright in their normal screen position, matching native camera apps (e.g.
+     *  Samsung's), which never rotate on-screen text, only icon glyphs. */
     private fun setupChromeRotation() {
-        rotatingChromeViews.addAll(listOf(binding.cameraSwitchButton))
+        rotatingChromeViews.addAll(listOf(binding.cameraSwitchButton, binding.lastCaptureThumbnail))
     }
 
     /** Counter-rotates every registered chrome glyph by the angle documented on
@@ -319,6 +331,84 @@ class MainActivity : AppCompatActivity() {
         val angle = -roundedDeviceOrientation.toFloat()
         rotatingChromeViews.forEach { view ->
             view.animate().rotation(angle).setDuration(250).start()
+        }
+    }
+
+    private data class RecentCapture(val uri: Uri, val isVideo: Boolean, val dateAdded: Long)
+
+    /** Re-queries MediaStore in the background for the most recent photo/video this app saved
+     *  to DCIM/Camera and refreshes the last-capture thumbnail button. Safe to call any time
+     *  (app start, or right after a photo/video finishes saving) since it re-derives the answer
+     *  from MediaStore rather than trusting caller-passed state. */
+    private fun refreshLastCaptureThumbnail() {
+        Thread {
+            val latest = queryMostRecentCapture() ?: return@Thread
+            val bitmap = try {
+                loadThumbnailBitmap(latest.uri, latest.isVideo)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to load last-capture thumbnail", t)
+                null
+            } ?: return@Thread
+            runOnUiThread {
+                lastCaptureUri = latest.uri
+                binding.lastCaptureThumbnail.setImageBitmap(bitmap)
+                binding.lastCaptureThumbnail.visibility = android.view.View.VISIBLE
+            }
+        }.start()
+    }
+
+    /** Finds the newer of the most recent image/video this app saved (filtered by our own
+     *  "ANAMORPHIC_" filename prefix, which works uniformly pre/post scoped storage without
+     *  needing the Q+-only OWNER_PACKAGE_NAME column). */
+    private fun queryMostRecentCapture(): RecentCapture? {
+        val image = queryMostRecentIn(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, isVideo = false)
+        val video = queryMostRecentIn(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, isVideo = true)
+        return listOfNotNull(image, video).maxByOrNull { it.dateAdded }
+    }
+
+    private fun queryMostRecentIn(collection: Uri, isVideo: Boolean): RecentCapture? {
+        val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DATE_ADDED)
+        contentResolver.query(
+            collection,
+            projection,
+            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?",
+            arrayOf("ANAMORPHIC_%"),
+            "${MediaStore.MediaColumns.DATE_ADDED} DESC LIMIT 1"
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                val dateAdded = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED))
+                return RecentCapture(ContentUris.withAppendedId(collection, id), isVideo, dateAdded)
+            }
+        }
+        return null
+    }
+
+    private fun loadThumbnailBitmap(uri: Uri, isVideo: Boolean): Bitmap? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            contentResolver.loadThumbnail(uri, Size(96, 96), null)
+        } else if (isVideo) {
+            @Suppress("DEPRECATION")
+            MediaStore.Video.Thumbnails.getThumbnail(contentResolver, ContentUris.parseId(uri), MediaStore.Video.Thumbnails.MINI_KIND, null)
+        } else {
+            @Suppress("DEPRECATION")
+            MediaStore.Images.Thumbnails.getThumbnail(contentResolver, ContentUris.parseId(uri), MediaStore.Images.Thumbnails.MINI_KIND, null)
+        }
+    }
+
+    /** Hands the last capture off to the device's default gallery/photos app - this app has no
+     *  in-app viewer by design. */
+    private fun openLastCapture() {
+        val uri = lastCaptureUri ?: return
+        val mimeType = contentResolver.getType(uri) ?: "*/*"
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        try {
+            startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            Snackbar.make(binding.root, getString(R.string.no_gallery_app), Snackbar.LENGTH_LONG).show()
         }
     }
 
@@ -388,6 +478,7 @@ class MainActivity : AppCompatActivity() {
                     MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), null, null)
                 }
                 bitmap.recycle()
+                refreshLastCaptureThumbnail()
                 runOnUiThread {
                     Snackbar.make(binding.root, getString(R.string.saved_to, name), Snackbar.LENGTH_LONG).show()
                 }
@@ -421,6 +512,7 @@ class MainActivity : AppCompatActivity() {
 
         newRecorder.start(config, orientationHint, object : StretchRecorder.Callback {
             override fun onSaved(uri: Uri, displayName: String) {
+                refreshLastCaptureThumbnail()
                 runOnUiThread {
                     Log.i(TAG, "Saved $displayName at encoded size ${config.outputWidth}x${config.outputHeight} (mode=${renderer.mode})")
                     Snackbar.make(binding.root, getString(R.string.saved_to, displayName), Snackbar.LENGTH_LONG).show()

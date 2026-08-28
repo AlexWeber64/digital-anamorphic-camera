@@ -14,4 +14,6 @@
     <string name="capture_mode_video">Video</string>
     <string name="capture_mode_photo">Photo</string>
     <string name="switch_camera">Switch camera</string>
+    <string name="last_capture_thumbnail">Open last capture</string>
+    <string name="no_gallery_app">No app found to open this file</string>
 </resources>
