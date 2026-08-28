@@ -29,6 +29,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.children
 import com.alexweber.anamorphicstretchcam.databinding.ActivityMainBinding
 import com.alexweber.anamorphicstretchcam.gl.StretchGLRenderer
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import java.io.File
 import java.text.SimpleDateFormat
@@ -124,6 +125,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Fires only after the user has already agreed, via [showGalleryPermissionDialog], to be
+     *  asked for whole-camera-roll access. Either outcome (grant or deny) marks the flow as
+     *  resolved so we never show that dialog or this system prompt again. */
+    private val mediaPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        markGalleryPermissionAsked()
+        val allGranted = mediaReadPermissions().all { grants[it] == true }
+        if (!allGranted) {
+            Snackbar.make(binding.root, getString(R.string.gallery_permission_denied), Snackbar.LENGTH_LONG).show()
+        }
+        refreshLastCaptureThumbnail()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -135,6 +150,7 @@ class MainActivity : AppCompatActivity() {
         setupPreviewSurface()
         setupChromeRotation()
         refreshLastCaptureThumbnail()
+        showGalleryPermissionDialogIfNeeded()
 
         initPipelineIfNeeded()
         // Camera permission alone is enough to start the pipeline (see initPipelineIfNeeded),
@@ -366,10 +382,53 @@ class MainActivity : AppCompatActivity() {
 
     private data class RecentCapture(val uri: Uri, val isVideo: Boolean, val dateAdded: Long)
 
-    /** Re-queries MediaStore in the background for the most recent photo/video this app saved
-     *  to DCIM/Camera and refreshes the last-capture thumbnail button. Safe to call any time
-     *  (app start, or right after a photo/video finishes saving) since it re-derives the answer
-     *  from MediaStore rather than trusting caller-passed state. */
+    private fun mediaReadPermissions(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+        } else {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+
+    private fun hasMediaReadPermission(): Boolean {
+        return mediaReadPermissions().all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun hasAskedGalleryPermission(): Boolean {
+        return getPreferences(MODE_PRIVATE).getBoolean(PREF_ASKED_GALLERY_PERMISSION, false)
+    }
+
+    private fun markGalleryPermissionAsked() {
+        getPreferences(MODE_PRIVATE).edit().putBoolean(PREF_ASKED_GALLERY_PERMISSION, true).apply()
+    }
+
+    /** Explains the whole-camera-roll vs. app-only tradeoff up front, once ever, before the
+     *  actual system permission prompt fires - the user picks Yes/No here rather than being
+     *  surprised by a bare "allow photos and videos?" system dialog. A "No" here, or a "Yes"
+     *  followed by the user denying the system prompt, both permanently resolve this as "app-only
+     *  captures" and are never asked again ([markGalleryPermissionAsked]). */
+    private fun showGalleryPermissionDialogIfNeeded() {
+        if (hasMediaReadPermission() || hasAskedGalleryPermission()) return
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.gallery_permission_dialog_title)
+            .setMessage(R.string.gallery_permission_dialog_message)
+            .setCancelable(false)
+            .setPositiveButton(R.string.gallery_permission_yes) { _, _ ->
+                mediaPermissionLauncher.launch(mediaReadPermissions())
+            }
+            .setNegativeButton(R.string.gallery_permission_no) { _, _ ->
+                markGalleryPermissionAsked()
+            }
+            .show()
+    }
+
+    /** Re-queries MediaStore in the background for the most recent photo/video and refreshes the
+     *  last-capture thumbnail button. Safe to call any time (app start, or right after a
+     *  photo/video finishes saving) since it re-derives the answer from MediaStore rather than
+     *  trusting caller-passed state. Scope depends on [hasMediaReadPermission] - the whole camera
+     *  roll if the user granted it, otherwise only this app's own "ANAMORPHIC_"-prefixed saves. */
     private fun refreshLastCaptureThumbnail() {
         Thread {
             val latest = try {
@@ -392,22 +451,26 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    /** Finds the newer of the most recent image/video this app saved (filtered by our own
-     *  "ANAMORPHIC_" filename prefix, which works uniformly pre/post scoped storage without
+    /** Finds the newer of the most recent image/video. With gallery permission granted, this
+     *  scans the whole camera roll like a native camera app; otherwise it's filtered to our own
+     *  "ANAMORPHIC_" filename prefix (which works uniformly pre/post scoped storage without
      *  needing the Q+-only OWNER_PACKAGE_NAME column). */
     private fun queryMostRecentCapture(): RecentCapture? {
-        val image = queryMostRecentIn(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, isVideo = false)
-        val video = queryMostRecentIn(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, isVideo = true)
+        val ownCapturesOnly = !hasMediaReadPermission()
+        val image = queryMostRecentIn(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, isVideo = false, ownCapturesOnly)
+        val video = queryMostRecentIn(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, isVideo = true, ownCapturesOnly)
         return listOfNotNull(image, video).maxByOrNull { it.dateAdded }
     }
 
-    private fun queryMostRecentIn(collection: Uri, isVideo: Boolean): RecentCapture? {
+    private fun queryMostRecentIn(collection: Uri, isVideo: Boolean, ownCapturesOnly: Boolean): RecentCapture? {
         val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DATE_ADDED)
+        val selection = if (ownCapturesOnly) "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?" else null
+        val selectionArgs = if (ownCapturesOnly) arrayOf("ANAMORPHIC_%") else null
         contentResolver.query(
             collection,
             projection,
-            "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?",
-            arrayOf("ANAMORPHIC_%"),
+            selection,
+            selectionArgs,
             "${MediaStore.MediaColumns.DATE_ADDED} DESC"
         )?.use { cursor ->
             if (cursor.moveToFirst()) {
@@ -613,5 +676,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
+        private const val PREF_ASKED_GALLERY_PERMISSION = "asked_gallery_permission"
     }
 }
