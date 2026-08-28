@@ -503,11 +503,35 @@ class MainActivity : AppCompatActivity() {
             setDataAndType(uri, mimeType)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+        defaultGalleryPackage()?.let { intent.`package` = it }
         try {
             startActivity(intent)
         } catch (e: ActivityNotFoundException) {
+            if (intent.`package` != null) {
+                // The resolved default-gallery role holder can't actually handle this URI/type -
+                // fall back to the normal app picker rather than failing outright.
+                intent.`package` = null
+                try {
+                    startActivity(intent)
+                    return
+                } catch (e2: ActivityNotFoundException) {
+                    // Fall through to the shared "nothing can open this" message below.
+                }
+            }
             Snackbar.make(binding.root, getString(R.string.no_gallery_app), Snackbar.LENGTH_LONG).show()
         }
+    }
+
+    /** Resolves the OS's registered default gallery app (Android 13+'s CATEGORY_APP_GALLERY
+     *  role - e.g. Samsung Gallery on a Samsung phone, Google Photos on a Pixel) so the
+     *  last-capture thumbnail can open directly in it instead of showing an app picker. Not
+     *  hardcoded to any manufacturer's package name, and this role simply doesn't exist pre-API
+     *  33 - callers should treat a null result as "let the system show its normal app picker". */
+    private fun defaultGalleryPackage(): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null
+        val galleryRoleIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_GALLERY)
+        return packageManager.resolveActivity(galleryRoleIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            ?.activityInfo?.packageName
     }
 
     private fun capturePhoto() {
