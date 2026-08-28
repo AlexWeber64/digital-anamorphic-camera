@@ -107,20 +107,22 @@
             android:value="2.0" />
 
         <!-- Video/Photo mode selector: plain unboxed text labels, no border - matches native
-             camera apps' minimal mode chrome. Active label is bold/white, inactive is dimmed
-             (see MainActivity.updateCaptureModeUi()). Sits directly above the shutter row. -->
-        <LinearLayout
+             camera apps' minimal mode chrome. Active label is bold/white and always centered;
+             the inactive label is dimmed and offset to the side (see
+             MainActivity.updateCaptureModeUi()) - both anchored to the same center point here
+             via layout_gravity="center" so a translationX of 0 always means true center,
+             regardless of which label that currently is. Sits directly above the shutter row. -->
+        <FrameLayout
             android:id="@+id/captureModeRow"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="14dp"
-            android:orientation="horizontal">
+            android:layout_marginTop="14dp">
 
             <TextView
                 android:id="@+id/captureModeVideoLabel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:layout_gravity="center"
                 android:paddingHorizontal="12dp"
                 android:paddingVertical="4dp"
                 android:text="@string/capture_mode_video"
@@ -131,12 +133,13 @@
                 android:id="@+id/captureModePhotoLabel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:layout_gravity="center"
                 android:paddingHorizontal="12dp"
                 android:paddingVertical="4dp"
                 android:text="@string/capture_mode_photo"
                 android:textAllCaps="false"
                 android:textSize="14sp" />
-        </LinearLayout>
+        </FrameLayout>
 
         <!-- Shutter row: large circular shutter, small circular camera-flip icon docked beside it -->
         <FrameLayout

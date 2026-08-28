@@ -49,6 +49,11 @@ class MainActivity : AppCompatActivity() {
     private var captureMode = CaptureMode.VIDEO
     private var pipelineInitialized = false
 
+    /** Horizontal distance (px) the inactive Video/Photo label sits from center, so the active
+     *  one always lands exactly centered - computed once from both labels' measured widths
+     *  (see [setupControls]), 0 until then. */
+    private var captureModeOffsetPx = 0f
+
     /** Clockwise device rotation from natural orientation, tracked live from the accelerometer.
      *  The app's window is locked to portrait (see AndroidManifest.xml) precisely so the OS
      *  never re-flows the control chrome on rotation - this is the only rotation signal in the
@@ -189,6 +194,16 @@ class MainActivity : AppCompatActivity() {
 
         binding.captureModeVideoLabel.setOnClickListener { setCaptureMode(CaptureMode.VIDEO) }
         binding.captureModePhotoLabel.setOnClickListener { setCaptureMode(CaptureMode.PHOTO) }
+        // Both labels are gravity="center" in the same FrameLayout (see activity_main.xml), so
+        // translationX=0 always means true center regardless of which label that currently is.
+        // The offset needed to push the *inactive* label fully clear of the centered one depends
+        // on both labels' actual rendered widths, which aren't known until after layout - measure
+        // once post-layout, then apply the now-known offset via the usual updateCaptureModeUi().
+        binding.captureModeRow.post {
+            val gapPx = resources.displayMetrics.density * 16f
+            captureModeOffsetPx = (binding.captureModeVideoLabel.width + binding.captureModePhotoLabel.width) / 2f + gapPx
+            updateCaptureModeUi()
+        }
 
         binding.recordButton.setOnClickListener {
             when (captureMode) {
@@ -231,6 +246,12 @@ class MainActivity : AppCompatActivity() {
         binding.captureModePhotoLabel.setTextColor(
             getColor(if (videoActive) R.color.mode_label_inactive else R.color.white)
         )
+
+        // Slide whichever label is active to dead center (translationX=0) and push the other
+        // one out to the side by the measured offset - Video sits left of Photo when inactive,
+        // matching their fixed left-to-right order in the layout.
+        binding.captureModeVideoLabel.animate().translationX(if (videoActive) 0f else -captureModeOffsetPx).start()
+        binding.captureModePhotoLabel.animate().translationX(if (videoActive) captureModeOffsetPx else 0f).start()
     }
 
     private fun updateScaleReadout() {
