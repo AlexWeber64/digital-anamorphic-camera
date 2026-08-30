@@ -14,4 +14,11 @@
     <string name="capture_mode_video">Video</string>
     <string name="capture_mode_photo">Photo</string>
     <string name="switch_camera">Switch camera</string>
+    <string name="last_capture_thumbnail">Open last capture</string>
+    <string name="no_gallery_app">No app found to open this file</string>
+    <string name="gallery_permission_dialog_title">Show your whole camera roll?</string>
+    <string name="gallery_permission_dialog_message">If you allow access to your photos and videos, the thumbnail button will show the most recent photo or video anywhere on your device, like your phone\'s built-in camera app.\n\nIf you don\'t allow, it will only show the most recent photo or video taken inside this app.</string>
+    <string name="gallery_permission_yes">Yes</string>
+    <string name="gallery_permission_no">No</string>
+    <string name="gallery_permission_denied">Photo/video access wasn\'t granted - showing captures from this app only</string>
 </resources>

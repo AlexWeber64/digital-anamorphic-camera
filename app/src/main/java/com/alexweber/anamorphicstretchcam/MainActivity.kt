@@ -1,7 +1,10 @@
 package com.alexweber.anamorphicstretchcam
 
 import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.ContentUris
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
@@ -26,6 +29,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.children
 import com.alexweber.anamorphicstretchcam.databinding.ActivityMainBinding
 import com.alexweber.anamorphicstretchcam.gl.StretchGLRenderer
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import java.io.File
 import java.text.SimpleDateFormat
@@ -48,6 +52,10 @@ class MainActivity : AppCompatActivity() {
     private var recordStartElapsedMs = 0L
     private var captureMode = CaptureMode.VIDEO
     private var pipelineInitialized = false
+
+    /** MediaStore URI of the most recent photo/video this app saved, shown in the last-capture
+     *  thumbnail button; null until [refreshLastCaptureThumbnail] finds one. */
+    private var lastCaptureUri: Uri? = null
 
     /** Horizontal distance (px) the inactive Video/Photo label sits from center, so the active
      *  one always lands exactly centered - computed once from both labels' measured widths
@@ -117,6 +125,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Fires only after the user has already agreed, via [showGalleryPermissionDialog], to be
+     *  asked for whole-camera-roll access. Either outcome (grant or deny) marks the flow as
+     *  resolved so we never show that dialog or this system prompt again. */
+    private val mediaPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        markGalleryPermissionAsked()
+        val allGranted = mediaReadPermissions().all { grants[it] == true }
+        if (!allGranted) {
+            Snackbar.make(binding.root, getString(R.string.gallery_permission_denied), Snackbar.LENGTH_LONG).show()
+        }
+        refreshLastCaptureThumbnail()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -127,6 +149,8 @@ class MainActivity : AppCompatActivity() {
         setupControls()
         setupPreviewSurface()
         setupChromeRotation()
+        refreshLastCaptureThumbnail()
+        showGalleryPermissionDialogIfNeeded()
 
         initPipelineIfNeeded()
         // Camera permission alone is enough to start the pipeline (see initPipelineIfNeeded),
@@ -214,6 +238,10 @@ class MainActivity : AppCompatActivity() {
 
         binding.cameraSwitchButton.setOnClickListener {
             cameraSource.switchCamera()
+        }
+
+        binding.lastCaptureThumbnail.setOnClickListener {
+            openLastCapture()
         }
 
         updateScaleReadout()
@@ -331,13 +359,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Registers the chrome glyph views that must counter-rotate to stay upright in place while
-     *  their containing chrome panel stays docked to the physical device edge. Only the
-     *  icon-only camera-flip button rotates - text-bearing controls (scale readout, mode-toggle
-     *  labels) are intentionally not registered here; they stay upright in their normal screen
-     *  position, matching native camera apps (e.g. Samsung's), which never rotate on-screen
-     *  text, only icon glyphs. */
+     *  their containing chrome panel stays docked to the physical device edge. Only icon-only
+     *  controls (the camera-flip button, the last-capture thumbnail) rotate - text-bearing
+     *  controls (scale readout, mode-toggle labels) are intentionally not registered here; they
+     *  stay upright in their normal screen position, matching native camera apps (e.g.
+     *  Samsung's), which never rotate on-screen text, only icon glyphs. */
     private fun setupChromeRotation() {
-        rotatingChromeViews.addAll(listOf(binding.cameraSwitchButton))
+        rotatingChromeViews.addAll(listOf(binding.cameraSwitchButton, binding.lastCaptureThumbnail))
     }
 
     /** Counter-rotates every registered chrome glyph by the angle documented on
@@ -350,6 +378,160 @@ class MainActivity : AppCompatActivity() {
         rotatingChromeViews.forEach { view ->
             view.animate().rotation(angle).setDuration(250).start()
         }
+    }
+
+    private data class RecentCapture(val uri: Uri, val isVideo: Boolean, val dateAdded: Long)
+
+    private fun mediaReadPermissions(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+        } else {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+
+    private fun hasMediaReadPermission(): Boolean {
+        return mediaReadPermissions().all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun hasAskedGalleryPermission(): Boolean {
+        return getPreferences(MODE_PRIVATE).getBoolean(PREF_ASKED_GALLERY_PERMISSION, false)
+    }
+
+    private fun markGalleryPermissionAsked() {
+        getPreferences(MODE_PRIVATE).edit().putBoolean(PREF_ASKED_GALLERY_PERMISSION, true).apply()
+    }
+
+    /** Explains the whole-camera-roll vs. app-only tradeoff up front, once ever, before the
+     *  actual system permission prompt fires - the user picks Yes/No here rather than being
+     *  surprised by a bare "allow photos and videos?" system dialog. A "No" here, or a "Yes"
+     *  followed by the user denying the system prompt, both permanently resolve this as "app-only
+     *  captures" and are never asked again ([markGalleryPermissionAsked]). */
+    private fun showGalleryPermissionDialogIfNeeded() {
+        if (hasMediaReadPermission() || hasAskedGalleryPermission()) return
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.gallery_permission_dialog_title)
+            .setMessage(R.string.gallery_permission_dialog_message)
+            .setCancelable(false)
+            .setPositiveButton(R.string.gallery_permission_yes) { _, _ ->
+                mediaPermissionLauncher.launch(mediaReadPermissions())
+            }
+            .setNegativeButton(R.string.gallery_permission_no) { _, _ ->
+                markGalleryPermissionAsked()
+            }
+            .show()
+    }
+
+    /** Re-queries MediaStore in the background for the most recent photo/video and refreshes the
+     *  last-capture thumbnail button. Safe to call any time (app start, or right after a
+     *  photo/video finishes saving) since it re-derives the answer from MediaStore rather than
+     *  trusting caller-passed state. Scope depends on [hasMediaReadPermission] - the whole camera
+     *  roll if the user granted it, otherwise only this app's own "ANAMORPHIC_"-prefixed saves. */
+    private fun refreshLastCaptureThumbnail() {
+        Thread {
+            val latest = try {
+                queryMostRecentCapture()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to query last capture", t)
+                null
+            } ?: return@Thread
+            val bitmap = try {
+                loadThumbnailBitmap(latest.uri, latest.isVideo)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to load last-capture thumbnail", t)
+                null
+            } ?: return@Thread
+            runOnUiThread {
+                lastCaptureUri = latest.uri
+                binding.lastCaptureThumbnail.setImageBitmap(bitmap)
+                binding.lastCaptureThumbnail.visibility = android.view.View.VISIBLE
+            }
+        }.start()
+    }
+
+    /** Finds the newer of the most recent image/video. With gallery permission granted, this
+     *  scans the whole camera roll like a native camera app; otherwise it's filtered to our own
+     *  "ANAMORPHIC_" filename prefix (which works uniformly pre/post scoped storage without
+     *  needing the Q+-only OWNER_PACKAGE_NAME column). */
+    private fun queryMostRecentCapture(): RecentCapture? {
+        val ownCapturesOnly = !hasMediaReadPermission()
+        val image = queryMostRecentIn(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, isVideo = false, ownCapturesOnly)
+        val video = queryMostRecentIn(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, isVideo = true, ownCapturesOnly)
+        return listOfNotNull(image, video).maxByOrNull { it.dateAdded }
+    }
+
+    private fun queryMostRecentIn(collection: Uri, isVideo: Boolean, ownCapturesOnly: Boolean): RecentCapture? {
+        val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DATE_ADDED)
+        val selection = if (ownCapturesOnly) "${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?" else null
+        val selectionArgs = if (ownCapturesOnly) arrayOf("ANAMORPHIC_%") else null
+        contentResolver.query(
+            collection,
+            projection,
+            selection,
+            selectionArgs,
+            "${MediaStore.MediaColumns.DATE_ADDED} DESC"
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                val dateAdded = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED))
+                return RecentCapture(ContentUris.withAppendedId(collection, id), isVideo, dateAdded)
+            }
+        }
+        return null
+    }
+
+    private fun loadThumbnailBitmap(uri: Uri, isVideo: Boolean): Bitmap? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            contentResolver.loadThumbnail(uri, Size(96, 96), null)
+        } else if (isVideo) {
+            @Suppress("DEPRECATION")
+            MediaStore.Video.Thumbnails.getThumbnail(contentResolver, ContentUris.parseId(uri), MediaStore.Video.Thumbnails.MINI_KIND, null)
+        } else {
+            @Suppress("DEPRECATION")
+            MediaStore.Images.Thumbnails.getThumbnail(contentResolver, ContentUris.parseId(uri), MediaStore.Images.Thumbnails.MINI_KIND, null)
+        }
+    }
+
+    /** Hands the last capture off to the device's default gallery/photos app - this app has no
+     *  in-app viewer by design. */
+    private fun openLastCapture() {
+        val uri = lastCaptureUri ?: return
+        val mimeType = contentResolver.getType(uri) ?: "*/*"
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        defaultGalleryPackage()?.let { intent.`package` = it }
+        try {
+            startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            if (intent.`package` != null) {
+                // The resolved default-gallery role holder can't actually handle this URI/type -
+                // fall back to the normal app picker rather than failing outright.
+                intent.`package` = null
+                try {
+                    startActivity(intent)
+                    return
+                } catch (e2: ActivityNotFoundException) {
+                    // Fall through to the shared "nothing can open this" message below.
+                }
+            }
+            Snackbar.make(binding.root, getString(R.string.no_gallery_app), Snackbar.LENGTH_LONG).show()
+        }
+    }
+
+    /** Resolves the OS's registered default gallery app (Android 13+'s CATEGORY_APP_GALLERY
+     *  role - e.g. Samsung Gallery on a Samsung phone, Google Photos on a Pixel) so the
+     *  last-capture thumbnail can open directly in it instead of showing an app picker. Not
+     *  hardcoded to any manufacturer's package name, and this role simply doesn't exist pre-API
+     *  33 - callers should treat a null result as "let the system show its normal app picker". */
+    private fun defaultGalleryPackage(): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null
+        val galleryRoleIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_GALLERY)
+        return packageManager.resolveActivity(galleryRoleIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            ?.activityInfo?.packageName
     }
 
     private fun capturePhoto() {
@@ -418,6 +600,7 @@ class MainActivity : AppCompatActivity() {
                     MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), null, null)
                 }
                 bitmap.recycle()
+                refreshLastCaptureThumbnail()
                 runOnUiThread {
                     Snackbar.make(binding.root, getString(R.string.saved_to, name), Snackbar.LENGTH_LONG).show()
                 }
@@ -451,6 +634,7 @@ class MainActivity : AppCompatActivity() {
 
         newRecorder.start(config, orientationHint, object : StretchRecorder.Callback {
             override fun onSaved(uri: Uri, displayName: String) {
+                refreshLastCaptureThumbnail()
                 runOnUiThread {
                     Log.i(TAG, "Saved $displayName at encoded size ${config.outputWidth}x${config.outputHeight} (mode=${renderer.mode})")
                     Snackbar.make(binding.root, getString(R.string.saved_to, displayName), Snackbar.LENGTH_LONG).show()
@@ -516,5 +700,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
+        private const val PREF_ASKED_GALLERY_PERMISSION = "asked_gallery_permission"
     }
 }

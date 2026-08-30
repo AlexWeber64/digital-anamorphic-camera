@@ -165,6 +165,21 @@
                 android:contentDescription="@string/switch_camera"
                 android:padding="10dp"
                 android:src="@drawable/ic_camera_switch" />
+
+            <ImageView
+                android:id="@+id/lastCaptureThumbnail"
+                android:layout_width="46dp"
+                android:layout_height="46dp"
+                android:layout_gravity="center_vertical|start"
+                android:layout_marginStart="18dp"
+                android:background="@drawable/circle_thumbnail_bg"
+                android:clickable="true"
+                android:clipToOutline="true"
+                android:contentDescription="@string/last_capture_thumbnail"
+                android:focusable="true"
+                android:outlineProvider="background"
+                android:scaleType="centerCrop"
+                android:visibility="invisible" />
         </FrameLayout>
     </LinearLayout>
 
