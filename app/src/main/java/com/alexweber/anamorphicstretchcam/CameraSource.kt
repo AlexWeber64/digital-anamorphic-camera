@@ -9,7 +9,11 @@ import android.util.Log
 import android.util.Size
 import android.view.Surface
 import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.SurfaceRequest
 import androidx.camera.core.resolutionselector.ResolutionSelector
@@ -27,6 +31,12 @@ import java.util.concurrent.Executor
  * stretch a preview-only effect. CameraX is used only for `Preview` (camera session +
  * lifecycle + permission-friendly setup); we hand it our own Surface backed by the GL
  * renderer's SurfaceTexture instead of a PreviewView, and pull frames out of it ourselves.
+ *
+ * An `ImageCapture` use case is also bound, but purely as a real-hardware flash trigger -
+ * its own captured image is always discarded (see [triggerFlashForCapture]). The actual saved
+ * photo still comes from the GL framebuffer readback (`MainActivity.capturePhoto`) so the
+ * anamorphic stretch stays baked into the pixels; ImageCapture's `setFlashMode`/AUTO metering
+ * is the only thing this app wants from it.
  */
 class CameraSource(
     private val context: Context,
@@ -35,10 +45,15 @@ class CameraSource(
     private val mainExecutor: Executor = ContextCompat.getMainExecutor(context)
     private var cameraProvider: ProcessCameraProvider? = null
     private var preview: Preview? = null
+    private var imageCapture: ImageCapture? = null
+    private var camera: Camera? = null
 
     private var surfaceTexture: SurfaceTexture? = null
     private var onReadyCallback: ((Size) -> Unit)? = null
     private var currentSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+
+    private var pendingFlashMode: Int = ImageCapture.FLASH_MODE_OFF
+    private var pendingTorchEnabled: Boolean = false
 
     /** Native sensor-reported size chosen for capture; set once [start] resolves it. */
     var captureSize: Size = Size(1920, 1080)
@@ -115,8 +130,16 @@ class CameraSource(
         }
         preview = previewUseCase
 
+        val imageCaptureUseCase = ImageCapture.Builder()
+            .setFlashMode(pendingFlashMode)
+            .build()
+        imageCapture = imageCaptureUseCase
+
         provider.unbindAll()
-        provider.bindToLifecycle(lifecycleOwner, cameraSelector, previewUseCase)
+        val boundCamera = provider.bindToLifecycle(
+            lifecycleOwner, cameraSelector, previewUseCase, imageCaptureUseCase
+        )
+        camera = boundCamera
     }
 
     private fun updateCameraCharacteristics(provider: ProcessCameraProvider, selector: CameraSelector) {
@@ -140,6 +163,58 @@ class CameraSource(
         cameraProvider?.unbindAll()
         cameraProvider = null
         preview = null
+        imageCapture = null
+        camera = null
+    }
+
+    /** Whether the currently bound camera has a flash/torch unit at all (the front camera on
+     *  most phones does not) - callers should hide or disable flash/torch UI when false. */
+    fun hasFlashUnit(): Boolean = camera?.cameraInfo?.hasFlashUnit() ?: false
+
+    /** Photo-mode flash mode ([ImageCapture.FLASH_MODE_OFF]/`_ON`/`_AUTO`), applied to the bound
+     *  [ImageCapture] use case immediately and remembered across camera switches/rebinds. */
+    var flashMode: Int
+        get() = pendingFlashMode
+        set(value) {
+            pendingFlashMode = value
+            imageCapture?.flashMode = value
+        }
+
+    /** Video-mode continuous torch, applied immediately and remembered across camera
+     *  switches/rebinds (though it only takes effect on a camera that [hasFlashUnit]). */
+    fun setTorchEnabled(enabled: Boolean) {
+        pendingTorchEnabled = enabled
+        camera?.cameraControl?.enableTorch(enabled)
+    }
+
+    /**
+     * Fires a throwaway CameraX still capture purely to trigger the real hardware flash
+     * (including genuine AUTO scene metering) in sync with this app's own GL-based photo grab.
+     * [onFlashLit] fires once the throwaway still capture completes (success or error) - the
+     * camera-core version this app is pinned to (1.3.4) has no earlier "capture started" signal
+     * on [ImageCapture]'s callback, so this is the closest available approximation of "the flash
+     * has fired"; the captured image itself is always discarded.
+     */
+    fun triggerFlashForCapture(onFlashLit: () -> Unit, onDone: () -> Unit) {
+        val capture = imageCapture
+        if (capture == null) {
+            onFlashLit()
+            onDone()
+            return
+        }
+        capture.takePicture(mainExecutor, object : ImageCapture.OnImageCapturedCallback() {
+            override fun onCaptureSuccess(image: ImageProxy) {
+                image.close()
+                onFlashLit()
+                onDone()
+            }
+
+            override fun onError(exception: ImageCaptureException) {
+                Log.w(TAG, "Flash-trigger capture failed, capturing unlit", exception)
+                onFlashLit()
+                onDone()
+            }
+        })
     }
 
     /**
