@@ -10,17 +10,42 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Front-camera "ring light": a continuous soft-light ring framing where a face would
-         typically sit, shown only in FrontFlashMode.RING (see MainActivity). Purely a UI
+    <!-- Front-camera "ring light": a soft white glow along the screen's outer edges (like a
+         ring-light rig), leaving the center - where the subject is framed - fully clear and
+         unobstructed. Four edge strips, each fading from opaque white at the screen edge to
+         transparent inward, scale with the screen via match_parent rather than being a fixed
+         size. Shown only in FrontFlashMode.RING (see MainActivity). Purely a UI/brightness
          overlay - there's no hardware flash/torch on the front camera to drive. -->
-    <View
+    <FrameLayout
         android:id="@+id/ringLightOverlay"
-        android:layout_width="220dp"
-        android:layout_height="260dp"
-        android:layout_gravity="top|center_horizontal"
-        android:layout_marginTop="120dp"
-        android:background="@drawable/ring_light_overlay"
-        android:visibility="gone" />
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="130dp"
+            android:layout_gravity="top"
+            android:background="@drawable/ring_light_edge_top" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="130dp"
+            android:layout_gravity="bottom"
+            android:background="@drawable/ring_light_edge_bottom" />
+
+        <View
+            android:layout_width="90dp"
+            android:layout_height="match_parent"
+            android:layout_gravity="start"
+            android:background="@drawable/ring_light_edge_start" />
+
+        <View
+            android:layout_width="90dp"
+            android:layout_height="match_parent"
+            android:layout_gravity="end"
+            android:background="@drawable/ring_light_edge_end" />
+    </FrameLayout>
 
     <!-- Recording indicator + timer - counter-rotated as a unit to stay upright/readable -->
     <LinearLayout
