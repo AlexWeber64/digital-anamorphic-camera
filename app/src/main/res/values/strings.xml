@@ -21,4 +21,10 @@
     <string name="gallery_permission_yes">Yes</string>
     <string name="gallery_permission_no">No</string>
     <string name="gallery_permission_denied">Photo/video access wasn\'t granted - showing captures from this app only</string>
+    <string name="flash_toggle">Flash</string>
+    <string name="flash_off">Flash off</string>
+    <string name="flash_on">Flash on</string>
+    <string name="flash_auto">Flash auto</string>
+    <string name="torch_off">Torch off</string>
+    <string name="torch_on">Torch on</string>
 </resources>

@@ -25,6 +25,7 @@ import android.view.OrientationEventListener
 import android.view.SurfaceHolder
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.ImageCapture
 import androidx.core.content.ContextCompat
 import androidx.core.view.children
 import com.alexweber.anamorphicstretchcam.databinding.ActivityMainBinding
@@ -41,6 +42,10 @@ class MainActivity : AppCompatActivity() {
 
     private enum class CaptureMode { VIDEO, PHOTO }
 
+    /** Photo-mode flash state, mirroring standard camera app conventions - unlike video's torch,
+     *  AUTO is meaningful here since a single flash pulse can be metered per shot. */
+    private enum class PhotoFlashMode { OFF, ON, AUTO }
+
     private lateinit var binding: ActivityMainBinding
 
     private val renderer = StretchGLRenderer()
@@ -52,6 +57,12 @@ class MainActivity : AppCompatActivity() {
     private var recordStartElapsedMs = 0L
     private var captureMode = CaptureMode.VIDEO
     private var pipelineInitialized = false
+
+    /** Photo-mode flash and video-mode torch state, each remembered independently so switching
+     *  Video/Photo mid-session doesn't reset the other's setting - both default OFF on launch
+     *  (not persisted across app restarts). */
+    private var photoFlashMode = PhotoFlashMode.OFF
+    private var videoTorchOn = false
 
     /** MediaStore URI of the most recent photo/video this app saved, shown in the last-capture
      *  thumbnail button; null until [refreshLastCaptureThumbnail] finds one. */
@@ -79,8 +90,8 @@ class MainActivity : AppCompatActivity() {
     /** Chrome glyph views that must counter-rotate in place to stay upright as the device
      *  physically rotates, while their containing chrome panel stays docked. Text-bearing
      *  controls (scale readout, mode-toggle labels) are deliberately excluded - only icon-only
-     *  controls (the camera-flip icon) rotate, matching native camera apps; text stays upright
-     *  in its normal screen position and is never rotated. */
+     *  controls (camera-flip, last-capture thumbnail, flash toggle) rotate, matching native
+     *  camera apps; text stays upright in its normal screen position and is never rotated. */
     private val rotatingChromeViews = mutableListOf<android.view.View>()
 
     private val orientationEventListener by lazy {
@@ -244,13 +255,19 @@ class MainActivity : AppCompatActivity() {
             openLastCapture()
         }
 
+        binding.flashButton.setOnClickListener {
+            cycleFlash()
+        }
+
         updateScaleReadout()
         updateCaptureModeUi()
+        applyFlashStateForCurrentMode()
     }
 
     private fun setCaptureMode(mode: CaptureMode) {
         captureMode = mode
         updateCaptureModeUi()
+        applyFlashStateForCurrentMode()
     }
 
     private fun updateCaptureModeUi() {
@@ -291,6 +308,74 @@ class MainActivity : AppCompatActivity() {
         binding.scaleReadout.text = String.format(Locale.US, "%.1fx %s", renderer.scale, modeLabel.uppercase())
     }
 
+    /** Cycles the flash button for the current capture mode: Photo is OFF -> ON -> AUTO -> OFF
+     *  (a single flash pulse can be metered per shot); Video is a plain ON/OFF torch toggle
+     *  (continuous illumination isn't metered, so AUTO wouldn't mean anything). */
+    private fun cycleFlash() {
+        when (captureMode) {
+            CaptureMode.VIDEO -> {
+                videoTorchOn = !videoTorchOn
+                cameraSource.setTorchEnabled(videoTorchOn)
+            }
+            CaptureMode.PHOTO -> {
+                photoFlashMode = when (photoFlashMode) {
+                    PhotoFlashMode.OFF -> PhotoFlashMode.ON
+                    PhotoFlashMode.ON -> PhotoFlashMode.AUTO
+                    PhotoFlashMode.AUTO -> PhotoFlashMode.OFF
+                }
+                cameraSource.flashMode = photoFlashMode.toImageCaptureFlashMode()
+            }
+        }
+        updateFlashButtonUi()
+    }
+
+    /** Re-applies each mode's own remembered flash/torch setting whenever the capture mode
+     *  changes, so e.g. toggling Video's torch on, switching to Photo (which forces torch off -
+     *  continuous light has no place in a metered single-shot flash), then back to Video
+     *  restores the torch rather than leaving it permanently reset. */
+    private fun applyFlashStateForCurrentMode() {
+        when (captureMode) {
+            CaptureMode.VIDEO -> {
+                cameraSource.flashMode = ImageCapture.FLASH_MODE_OFF
+                cameraSource.setTorchEnabled(videoTorchOn)
+            }
+            CaptureMode.PHOTO -> {
+                cameraSource.setTorchEnabled(false)
+                cameraSource.flashMode = photoFlashMode.toImageCaptureFlashMode()
+            }
+        }
+        updateFlashButtonUi()
+    }
+
+    private fun PhotoFlashMode.toImageCaptureFlashMode(): Int = when (this) {
+        PhotoFlashMode.OFF -> ImageCapture.FLASH_MODE_OFF
+        PhotoFlashMode.ON -> ImageCapture.FLASH_MODE_ON
+        PhotoFlashMode.AUTO -> ImageCapture.FLASH_MODE_AUTO
+    }
+
+    /** Reflects the current mode's flash/torch state in the button's icon, and disables it
+     *  entirely on a camera with no flash unit (e.g. most phones' front camera). */
+    private fun updateFlashButtonUi() {
+        val available = cameraSource.hasFlashUnit()
+        binding.flashButton.isEnabled = available
+        binding.flashButton.alpha = if (available) 1f else 0.35f
+
+        val (iconRes, description) = when (captureMode) {
+            CaptureMode.VIDEO -> if (videoTorchOn) {
+                R.drawable.ic_flash_on to R.string.torch_on
+            } else {
+                R.drawable.ic_flash_off to R.string.torch_off
+            }
+            CaptureMode.PHOTO -> when (photoFlashMode) {
+                PhotoFlashMode.OFF -> R.drawable.ic_flash_off to R.string.flash_off
+                PhotoFlashMode.ON -> R.drawable.ic_flash_on to R.string.flash_on
+                PhotoFlashMode.AUTO -> R.drawable.ic_flash_auto to R.string.flash_auto
+            }
+        }
+        binding.flashButton.setImageResource(iconRes)
+        binding.flashButton.contentDescription = getString(description)
+    }
+
     private fun initPipeline() {
         renderer.start(object : StretchGLRenderer.Listener {
             override fun onSurfaceTextureReady(surfaceTexture: SurfaceTexture) {
@@ -304,6 +389,11 @@ class MainActivity : AppCompatActivity() {
             captureSize = size
             renderer.facingFront = cameraSource.lensFacing == CameraCharacteristics.LENS_FACING_FRONT
             Log.i(TAG, "Camera bound at native sensor size $size")
+            // Re-applies the current mode's flash/torch setting to whichever camera just bound -
+            // hasFlashUnit() can only be answered once a camera is actually bound, and both it
+            // and the torch state need reapplying on every switchCamera() rebind too (most front
+            // cameras lack a flash unit entirely).
+            applyFlashStateForCurrentMode()
         }
     }
 
@@ -360,12 +450,14 @@ class MainActivity : AppCompatActivity() {
 
     /** Registers the chrome glyph views that must counter-rotate to stay upright in place while
      *  their containing chrome panel stays docked to the physical device edge. Only icon-only
-     *  controls (the camera-flip button, the last-capture thumbnail) rotate - text-bearing
+     *  controls (camera-flip, last-capture thumbnail, flash toggle) rotate - text-bearing
      *  controls (scale readout, mode-toggle labels) are intentionally not registered here; they
      *  stay upright in their normal screen position, matching native camera apps (e.g.
      *  Samsung's), which never rotate on-screen text, only icon glyphs. */
     private fun setupChromeRotation() {
-        rotatingChromeViews.addAll(listOf(binding.cameraSwitchButton, binding.lastCaptureThumbnail))
+        rotatingChromeViews.addAll(
+            listOf(binding.cameraSwitchButton, binding.lastCaptureThumbnail, binding.flashButton)
+        )
     }
 
     /** Counter-rotates every registered chrome glyph by the angle documented on
@@ -536,6 +628,21 @@ class MainActivity : AppCompatActivity() {
 
     private fun capturePhoto() {
         animateCaptureButtonPress()
+        if (photoFlashMode == PhotoFlashMode.OFF || !cameraSource.hasFlashUnit()) {
+            capturePhotoFrame()
+        } else {
+            // Fires a throwaway ImageCapture still purely to trigger the real hardware flash
+            // (including genuine AUTO metering), then grabs our own GL frame - discarding
+            // ImageCapture's own image (see CameraSource.triggerFlashForCapture's doc for why,
+            // including the approximation this app's pinned CameraX version forces here).
+            cameraSource.triggerFlashForCapture(
+                onFlashLit = { capturePhotoFrame() },
+                onDone = {}
+            )
+        }
+    }
+
+    private fun capturePhotoFrame() {
         val outputSize = computeOutputSize()
         renderer.logRotationDebugSnapshot("photoCapture")
         renderer.capturePhoto(outputSize.width, outputSize.height) { bitmap ->

@@ -41,20 +41,38 @@
             android:textSize="14sp" />
     </LinearLayout>
 
-    <!-- Current scale readout - counter-rotated to stay upright/readable -->
-    <TextView
-        android:id="@+id/scaleReadout"
+    <!-- Top-end stack: scale readout (counter-rotated to stay upright/readable) above the
+         icon-only flash/torch toggle (counter-rotated in place like other icon-only chrome). -->
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
         android:layout_margin="16dp"
-        android:background="@drawable/pill_bg"
-        android:paddingHorizontal="12dp"
-        android:paddingVertical="6dp"
-        android:text="2.0x STRETCH"
-        android:textColor="@color/accent"
-        android:textSize="13sp"
-        android:textStyle="bold" />
+        android:orientation="vertical"
+        android:gravity="end">
+
+        <TextView
+            android:id="@+id/scaleReadout"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/pill_bg"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="6dp"
+            android:text="2.0x STRETCH"
+            android:textColor="@color/accent"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/flashButton"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/circle_icon_bg"
+            android:contentDescription="@string/flash_toggle"
+            android:padding="9dp"
+            android:src="@drawable/ic_flash_off" />
+    </LinearLayout>
 
     <!-- Bottom-docked control chrome - stays pinned to the physical bottom edge; only the
          glyphs/labels inside individually counter-rotate (see MainActivity), the panel itself
