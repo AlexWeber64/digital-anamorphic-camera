@@ -10,6 +10,18 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Front-camera "ring light": a continuous soft-light ring framing where a face would
+         typically sit, shown only in FrontFlashMode.RING (see MainActivity). Purely a UI
+         overlay - there's no hardware flash/torch on the front camera to drive. -->
+    <View
+        android:id="@+id/ringLightOverlay"
+        android:layout_width="220dp"
+        android:layout_height="260dp"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="120dp"
+        android:background="@drawable/ring_light_overlay"
+        android:visibility="gone" />
+
     <!-- Recording indicator + timer - counter-rotated as a unit to stay upright/readable -->
     <LinearLayout
         android:id="@+id/recIndicatorContainer"
@@ -228,5 +240,16 @@
             android:layout_marginTop="16dp"
             android:text="@string/permission_rationale" />
     </LinearLayout>
+
+    <!-- Snapchat-style front-camera "flash": briefly floods the whole screen white at max
+         brightness right before/during a photo grab (see MainActivity.showScreenFlashOverlay).
+         Last child so it's topmost, covering the chrome too - the point is the whole screen
+         becomes the light source, same as the front camera facing the same way it does. -->
+    <View
+        android:id="@+id/frontFlashOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/white"
+        android:visibility="gone" />
 
 </FrameLayout>

@@ -46,6 +46,14 @@ class MainActivity : AppCompatActivity() {
      *  AUTO is meaningful here since a single flash pulse can be metered per shot. */
     private enum class PhotoFlashMode { OFF, ON, AUTO }
 
+    /** Front-camera "flash" - this device's front camera has no LED flash/torch unit at all,
+     *  so this is a pure UI trick (like Snapchat's front-flash), never touching
+     *  ImageCapture/Camera2 flash APIs. FLASH is a brief full-screen white flood at max
+     *  brightness timed to a photo capture (see [captureWithScreenFlash]); RING is a
+     *  continuous soft-light ring around the live preview, valid in both Photo and Video since
+     *  it's not a discrete pulse (see [updateFlashButtonUi]). */
+    private enum class FrontFlashMode { OFF, FLASH, RING }
+
     private lateinit var binding: ActivityMainBinding
 
     private val renderer = StretchGLRenderer()
@@ -63,6 +71,17 @@ class MainActivity : AppCompatActivity() {
      *  (not persisted across app restarts). */
     private var photoFlashMode = PhotoFlashMode.OFF
     private var videoTorchOn = false
+
+    /** Front-camera flash/ring overlay state, remembered independently of the back camera's
+     *  photoFlashMode/videoTorchOn - persists across Photo/Video switches (Ring stays active
+     *  through a mode switch; Flash falls back to OFF when switching to Video, since a discrete
+     *  pulse is meaningless there - see [applyFlashStateForCurrentMode]). Also defaults OFF on
+     *  launch, not persisted across app restarts. */
+    private var frontFlashMode = FrontFlashMode.OFF
+
+    /** Screen brightness saved by [showScreenFlashOverlay] just before overriding it to max,
+     *  restored by [hideScreenFlashOverlay]; null when no override is currently active. */
+    private var savedScreenBrightness: Float? = null
 
     /** MediaStore URI of the most recent photo/video this app saved, shown in the last-capture
      *  thumbnail button; null until [refreshLastCaptureThumbnail] finds one. */
@@ -308,40 +327,71 @@ class MainActivity : AppCompatActivity() {
         binding.scaleReadout.text = String.format(Locale.US, "%.1fx %s", renderer.scale, modeLabel.uppercase())
     }
 
-    /** Cycles the flash button for the current capture mode: Photo is OFF -> ON -> AUTO -> OFF
-     *  (a single flash pulse can be metered per shot); Video is a plain ON/OFF torch toggle
-     *  (continuous illumination isn't metered, so AUTO wouldn't mean anything). */
+    /** Cycles the flash button for the current camera/mode. Front camera: Photo is
+     *  OFF -> Flash -> Ring -> OFF; Video skips Flash entirely (a discrete pulse has no meaning
+     *  for continuous recording), so just OFF -> Ring -> OFF. Back camera: Photo is
+     *  OFF -> ON -> AUTO -> OFF (a single flash pulse can be metered per shot); Video is a plain
+     *  ON/OFF torch toggle (continuous illumination isn't metered, so AUTO wouldn't mean
+     *  anything). */
     private fun cycleFlash() {
-        when (captureMode) {
-            CaptureMode.VIDEO -> {
-                videoTorchOn = !videoTorchOn
-                cameraSource.setTorchEnabled(videoTorchOn)
-            }
-            CaptureMode.PHOTO -> {
-                photoFlashMode = when (photoFlashMode) {
-                    PhotoFlashMode.OFF -> PhotoFlashMode.ON
-                    PhotoFlashMode.ON -> PhotoFlashMode.AUTO
-                    PhotoFlashMode.AUTO -> PhotoFlashMode.OFF
+        if (cameraSource.lensFacing == CameraCharacteristics.LENS_FACING_FRONT) {
+            frontFlashMode = nextFrontFlashMode(frontFlashMode)
+        } else {
+            when (captureMode) {
+                CaptureMode.VIDEO -> {
+                    videoTorchOn = !videoTorchOn
+                    cameraSource.setTorchEnabled(videoTorchOn)
                 }
-                cameraSource.flashMode = photoFlashMode.toImageCaptureFlashMode()
+                CaptureMode.PHOTO -> {
+                    photoFlashMode = when (photoFlashMode) {
+                        PhotoFlashMode.OFF -> PhotoFlashMode.ON
+                        PhotoFlashMode.ON -> PhotoFlashMode.AUTO
+                        PhotoFlashMode.AUTO -> PhotoFlashMode.OFF
+                    }
+                    cameraSource.flashMode = photoFlashMode.toImageCaptureFlashMode()
+                }
             }
         }
         updateFlashButtonUi()
     }
 
-    /** Re-applies each mode's own remembered flash/torch setting whenever the capture mode
-     *  changes, so e.g. toggling Video's torch on, switching to Photo (which forces torch off -
-     *  continuous light has no place in a metered single-shot flash), then back to Video
-     *  restores the torch rather than leaving it permanently reset. */
-    private fun applyFlashStateForCurrentMode() {
-        when (captureMode) {
-            CaptureMode.VIDEO -> {
-                cameraSource.flashMode = ImageCapture.FLASH_MODE_OFF
-                cameraSource.setTorchEnabled(videoTorchOn)
+    private fun nextFrontFlashMode(current: FrontFlashMode): FrontFlashMode {
+        return if (captureMode == CaptureMode.VIDEO) {
+            if (current == FrontFlashMode.RING) FrontFlashMode.OFF else FrontFlashMode.RING
+        } else {
+            when (current) {
+                FrontFlashMode.OFF -> FrontFlashMode.FLASH
+                FrontFlashMode.FLASH -> FrontFlashMode.RING
+                FrontFlashMode.RING -> FrontFlashMode.OFF
             }
-            CaptureMode.PHOTO -> {
-                cameraSource.setTorchEnabled(false)
-                cameraSource.flashMode = photoFlashMode.toImageCaptureFlashMode()
+        }
+    }
+
+    /** Re-applies the active camera/mode's own remembered flash/torch/ring setting whenever the
+     *  capture mode or the bound camera changes, so e.g. toggling Video's torch on, switching to
+     *  Photo (which forces torch off - continuous light has no place in a metered single-shot
+     *  flash), then back to Video restores the torch rather than leaving it permanently reset.
+     *  Front camera: Ring persists across a Photo/Video switch uninterrupted (not a discrete
+     *  pulse), Flash falls back to OFF if switching into Video (invalid there). */
+    private fun applyFlashStateForCurrentMode() {
+        if (cameraSource.lensFacing == CameraCharacteristics.LENS_FACING_FRONT) {
+            if (captureMode == CaptureMode.VIDEO && frontFlashMode == FrontFlashMode.FLASH) {
+                frontFlashMode = FrontFlashMode.OFF
+            }
+            // No hardware flash/torch on the front camera - keep the back-camera controls inert
+            // regardless of whatever they were last set to on the back camera.
+            cameraSource.setTorchEnabled(false)
+            cameraSource.flashMode = ImageCapture.FLASH_MODE_OFF
+        } else {
+            when (captureMode) {
+                CaptureMode.VIDEO -> {
+                    cameraSource.flashMode = ImageCapture.FLASH_MODE_OFF
+                    cameraSource.setTorchEnabled(videoTorchOn)
+                }
+                CaptureMode.PHOTO -> {
+                    cameraSource.setTorchEnabled(false)
+                    cameraSource.flashMode = photoFlashMode.toImageCaptureFlashMode()
+                }
             }
         }
         updateFlashButtonUi()
@@ -353,9 +403,31 @@ class MainActivity : AppCompatActivity() {
         PhotoFlashMode.AUTO -> ImageCapture.FLASH_MODE_AUTO
     }
 
-    /** Reflects the current mode's flash/torch state in the button's icon, and disables it
-     *  entirely on a camera with no flash unit (e.g. most phones' front camera). */
+    /** Reflects the active camera/mode's flash state in the button's icon and the ring-light
+     *  overlay's visibility. The front camera has no hardware flash unit at all, so its branch
+     *  is a pure UI toggle - always enabled, never gated on [CameraSource.hasFlashUnit]; the
+     *  back camera's branch is unchanged from before front-camera support was added. */
     private fun updateFlashButtonUi() {
+        val isFrontCamera = cameraSource.lensFacing == CameraCharacteristics.LENS_FACING_FRONT
+        binding.ringLightOverlay.visibility = if (isFrontCamera && frontFlashMode == FrontFlashMode.RING) {
+            android.view.View.VISIBLE
+        } else {
+            android.view.View.GONE
+        }
+
+        if (isFrontCamera) {
+            binding.flashButton.isEnabled = true
+            binding.flashButton.alpha = 1f
+            val (iconRes, description) = when (frontFlashMode) {
+                FrontFlashMode.OFF -> R.drawable.ic_flash_off to R.string.flash_off
+                FrontFlashMode.FLASH -> R.drawable.ic_flash_on to R.string.flash_on
+                FrontFlashMode.RING -> R.drawable.ic_flash_ring to R.string.flash_ring
+            }
+            binding.flashButton.setImageResource(iconRes)
+            binding.flashButton.contentDescription = getString(description)
+            return
+        }
+
         val available = cameraSource.hasFlashUnit()
         binding.flashButton.isEnabled = available
         binding.flashButton.alpha = if (available) 1f else 0.35f
@@ -628,24 +700,42 @@ class MainActivity : AppCompatActivity() {
 
     private fun capturePhoto() {
         animateCaptureButtonPress()
-        if (photoFlashMode == PhotoFlashMode.OFF || !cameraSource.hasFlashUnit()) {
-            capturePhotoFrame()
-        } else {
-            // Fires a throwaway ImageCapture still purely to trigger the real hardware flash
-            // (including genuine AUTO metering), then grabs our own GL frame - discarding
-            // ImageCapture's own image (see CameraSource.triggerFlashForCapture's doc for why,
-            // including the approximation this app's pinned CameraX version forces here).
-            cameraSource.triggerFlashForCapture(
-                onFlashLit = { capturePhotoFrame() },
-                onDone = {}
-            )
+        val isFrontCamera = cameraSource.lensFacing == CameraCharacteristics.LENS_FACING_FRONT
+        when {
+            isFrontCamera && frontFlashMode == FrontFlashMode.FLASH -> captureWithScreenFlash()
+            !isFrontCamera && photoFlashMode != PhotoFlashMode.OFF && cameraSource.hasFlashUnit() -> {
+                // Fires a throwaway ImageCapture still purely to trigger the real hardware flash
+                // (including genuine AUTO metering), then grabs our own GL frame - discarding
+                // ImageCapture's own image (see CameraSource.triggerFlashForCapture's doc for why,
+                // including the approximation this app's pinned CameraX version forces here).
+                cameraSource.triggerFlashForCapture(
+                    onFlashLit = { capturePhotoFrame() },
+                    onDone = {}
+                )
+            }
+            // Front OFF/RING and back OFF/no-flash-unit all need no special capture handling -
+            // RING is already continuously lit and simply keeps running through the capture.
+            else -> capturePhotoFrame()
         }
     }
 
-    private fun capturePhotoFrame() {
+    /** Snapchat-style front-camera "flash": this device's front camera has no LED flash/torch
+     *  unit at all, so this simulates one by briefly flooding the whole screen at max
+     *  brightness right before the GL frame grab, then restoring the screen exactly as it was
+     *  as soon as the frame is captured - a pure UI trick, no ImageCapture/Camera2 flash APIs
+     *  involved (unlike the back camera's real hardware flash path above). */
+    private fun captureWithScreenFlash() {
+        showScreenFlashOverlay()
+        uiHandler.postDelayed({
+            capturePhotoFrame { hideScreenFlashOverlay() }
+        }, SCREEN_FLASH_LEAD_IN_MS)
+    }
+
+    private fun capturePhotoFrame(onFrameGrabbed: () -> Unit = {}) {
         val outputSize = computeOutputSize()
         renderer.logRotationDebugSnapshot("photoCapture")
         renderer.capturePhoto(outputSize.width, outputSize.height) { bitmap ->
+            onFrameGrabbed()
             if (bitmap == null) {
                 runOnUiThread {
                     Snackbar.make(binding.root, getString(R.string.photo_save_failed, ""), Snackbar.LENGTH_LONG).show()
@@ -662,6 +752,34 @@ class MainActivity : AppCompatActivity() {
                 rotated
             }
             savePhoto(oriented)
+        }
+    }
+
+    /** Floods the screen white, bumping brightness to max first if the app isn't already
+     *  running at max (restored exactly by [hideScreenFlashOverlay]). Safe to call from any
+     *  thread - [StretchGLRenderer.capturePhoto]'s callback runs on the GL thread, not the UI
+     *  thread, and this is invoked from there via [capturePhotoFrame]'s onFrameGrabbed hook. */
+    private fun showScreenFlashOverlay() {
+        runOnUiThread {
+            val params = window.attributes
+            savedScreenBrightness = params.screenBrightness
+            if (params.screenBrightness < 1f) {
+                params.screenBrightness = 1f
+                window.attributes = params
+            }
+            binding.frontFlashOverlay.visibility = android.view.View.VISIBLE
+        }
+    }
+
+    private fun hideScreenFlashOverlay() {
+        runOnUiThread {
+            binding.frontFlashOverlay.visibility = android.view.View.GONE
+            savedScreenBrightness?.let { original ->
+                val params = window.attributes
+                params.screenBrightness = original
+                window.attributes = params
+            }
+            savedScreenBrightness = null
         }
     }
 
@@ -808,5 +926,10 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val PREF_ASKED_GALLERY_PERMISSION = "asked_gallery_permission"
+
+        /** Lead-in delay before the GL frame grab in [captureWithScreenFlash], giving the
+         *  screen time to actually ramp up to max brightness before the shot - keeps the
+         *  overlay's total visible time in Snapchat's ballpark of ~150-300ms. */
+        private const val SCREEN_FLASH_LEAD_IN_MS = 150L
     }
 }
