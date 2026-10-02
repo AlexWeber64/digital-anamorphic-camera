@@ -1,5 +1,7 @@
 # Anamorphic Stretch Cam
 
+[![pipeline status](https://gitlab.com/AlexWeber64/digital-anamorphic-camera/badges/master/pipeline.svg)](https://gitlab.com/AlexWeber64/digital-anamorphic-camera/-/pipelines)
+
 A Kotlin Android app that bakes a permanent, real, pixel-level horizontal
 stretch/squeeze into recorded MP4 video, not a preview overlay, not a
 metadata hint. What you see on the monitor is a proportional simulation of
