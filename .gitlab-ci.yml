@@ -17,9 +17,11 @@ build:
   variables:
     ANDROID_HOME: "$CI_PROJECT_DIR/.android-sdk"
     GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle-home"
-    # Google's command-line SDK tools. Once the licenses are accepted, Gradle
-    # downloads the SDK platform and build tools the app needs by itself.
-    ANDROID_CMDLINE_TOOLS: "16111833"
+    # Google's command-line SDK tools, pinned to a build that still has the
+    # classic sdkmanager. Newer builds hand it off to the new Android CLI, and
+    # Gradle doesn't see licenses accepted that way. Once they're accepted,
+    # Gradle downloads the SDK platform and build tools the app needs itself.
+    ANDROID_CMDLINE_TOOLS: "13114758"
   cache:
     key:
       files: [app/build.gradle.kts, gradle/wrapper/gradle-wrapper.properties]
@@ -27,13 +29,13 @@ build:
   before_script:
     - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl unzip > /dev/null
     - |
-      if [ ! -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+      if [ ! -x "$ANDROID_HOME/cmdline-tools/$ANDROID_CMDLINE_TOOLS/bin/sdkmanager" ]; then
         curl -sSfL -o /tmp/cmdline-tools.zip "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS}_latest.zip"
         unzip -q /tmp/cmdline-tools.zip -d /tmp
         mkdir -p "$ANDROID_HOME/cmdline-tools"
-        mv /tmp/cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
+        mv /tmp/cmdline-tools "$ANDROID_HOME/cmdline-tools/$ANDROID_CMDLINE_TOOLS"
       fi
-    - (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+    - (yes || true) | "$ANDROID_HOME/cmdline-tools/$ANDROID_CMDLINE_TOOLS/bin/sdkmanager" --licenses > /dev/null
   script:
     - ./gradlew assembleDebug --no-daemon --stacktrace
   artifacts:
