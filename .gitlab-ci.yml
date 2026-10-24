@@ -1,0 +1,44 @@
+# Builds the debug APK on every merge request and every push to master. The
+# APK is kept as a downloadable artifact.
+
+# Run for merge requests and the default branch, without a duplicate
+# branch pipeline for every push to an open merge request.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+build:
+  # The app targets Java 17 (see app/build.gradle.kts), and AGP 8.7.3 /
+  # Gradle 8.14.4 need a JDK 17+ toolchain.
+  image: eclipse-temurin:17-jdk
+  variables:
+    ANDROID_HOME: "$CI_PROJECT_DIR/.android-sdk"
+    GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle-home"
+    # Google's command-line SDK tools, pinned to a build that still has the
+    # classic sdkmanager. Newer builds hand it off to the new Android CLI, and
+    # Gradle doesn't see licenses accepted that way. Once they're accepted,
+    # Gradle downloads the SDK platform and build tools the app needs itself.
+    ANDROID_CMDLINE_TOOLS: "13114758"
+  cache:
+    key:
+      files: [app/build.gradle.kts, gradle/wrapper/gradle-wrapper.properties]
+    paths: [.android-sdk/, .gradle-home/caches/, .gradle-home/wrapper/]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl unzip > /dev/null
+    - |
+      if [ ! -x "$ANDROID_HOME/cmdline-tools/$ANDROID_CMDLINE_TOOLS/bin/sdkmanager" ]; then
+        curl -sSfL -o /tmp/cmdline-tools.zip "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS}_latest.zip"
+        unzip -q /tmp/cmdline-tools.zip -d /tmp
+        mkdir -p "$ANDROID_HOME/cmdline-tools"
+        mv /tmp/cmdline-tools "$ANDROID_HOME/cmdline-tools/$ANDROID_CMDLINE_TOOLS"
+      fi
+    - (yes || true) | "$ANDROID_HOME/cmdline-tools/$ANDROID_CMDLINE_TOOLS/bin/sdkmanager" --licenses > /dev/null
+  script:
+    - ./gradlew assembleDebug --no-daemon --stacktrace
+  artifacts:
+    name: "anamorphic-stretch-cam-$CI_COMMIT_SHORT_SHA"
+    paths: [app/build/outputs/apk/debug/]
+    expire_in: 30 days
