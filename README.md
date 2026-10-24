@@ -1,7 +1,7 @@
 # Anamorphic Stretch Cam
 
 A Kotlin Android app that bakes a permanent, real, pixel-level horizontal
-stretch/squeeze into recorded MP4 video - not a preview overlay, not a
+stretch/squeeze into recorded MP4 video, not a preview overlay, not a
 metadata hint. What you see on the monitor is a proportional simulation of
 what gets encoded; what gets encoded is the actual distorted frame content.
 
@@ -9,7 +9,7 @@ what gets encoded; what gets encoded is the actual distorted frame content.
 
 CameraX's `VideoCapture` use case owns its own internal recording `Surface`
 and hands it straight to its internal `Recorder`/`MediaMuxer` pipeline. There
-is no supported hook to inject a GL-transformed frame as its source - a
+is no supported hook to inject a GL-transformed frame as its source: a
 `Matrix` applied to a `PreviewView`/`TextureView` only ever changes the
 on-screen preview, because `VideoCapture` reads from the camera's surface
 independently of whatever the preview view is doing. Any implementation that
@@ -30,21 +30,21 @@ Camera -> SurfaceTexture (external OES texture)
 
 Because both destinations are painted from the *same* draw call with the
 *same* MVP matrix logic, the encoded file is a faithful, WYSIWYG match for
-what the operator saw while filming (mode differences aside - see below).
+what the operator saw while filming (mode differences aside; see below).
 
 ## Stretch vs. Squeeze modes
 
 Chosen once per recording (locked at `start()`, since MediaCodec can't change
 output dimensions mid-stream) via the toggle above the scale slider:
 
-- **Stretch** - the encoder's own output buffer is configured *wider* than
+- **Stretch**: the encoder's own output buffer is configured *wider* than
   the sensor (`sensorWidth * scale`, rounded to an even pixel count for the
   H.264 encoder). The full, unscaled camera texture is drawn across that
-  wider buffer, so the buffer's own aspect ratio does the stretching - a
+  wider buffer, so the buffer's own aspect ratio does the stretching: a
   1920x1080 sensor frame at 2.0x becomes an encoded **3840x1080** file. This
   is the unambiguous option: any player, on any device, shows the distortion
   with zero special handling.
-- **Squeeze** - the encoder's output buffer stays at the sensor's native
+- **Squeeze**: the encoder's output buffer stays at the sensor's native
   size. The quad is instead scaled down by `1/scale` on both destinations,
   compressing the image toward the center (with black pillarboxing) -
   approximating what raw, un-desqueezed anamorphic lens footage looks like.
@@ -57,14 +57,14 @@ out once recording starts.
 
 The app runs unlocked (both orientations) via `android:configChanges` so the
 Activity, camera session, GL context, and any in-progress recording all
-survive a rotation - only the `SurfaceView`'s own `Surface` is torn down and
+survive a rotation; only the `SurfaceView`'s own `Surface` is torn down and
 recreated by the OS, which `StretchGLRenderer.setScreenSurface()` reacts to.
 
 Device-rotation compensation (`CameraX SurfaceRequest.TransformationInfo`) is
 applied **only** to the preview destination, so the monitor always matches
 how the phone is being held. The encoder destination is left completely
 untouched, and `MediaMuxer.setOrientationHint()` carries the playback
-rotation instead - that's a standard, universally-supported orientation
+rotation instead. That's a standard, universally-supported orientation
 hint unrelated to the anamorphic distortion, which stays a true per-pixel
 transform in the encoded frames themselves either way.
 
@@ -101,21 +101,21 @@ Saved ANAMORPHIC_20260823_181700.mp4 at encoded size 3840x1080 (mode=STRETCH)
 ```
 
 Pull the file (`adb pull /sdcard/DCIM/Camera/ANAMORPHIC_*.mp4`) and inspect it
-with `ffprobe` or `MediaMetadataRetriever` - in Stretch mode the container's
+with `ffprobe` or `MediaMetadataRetriever`. In Stretch mode the container's
 actual coded width should be `sensorWidth * scale`, confirming the distortion
 is a real pixel-dimension change baked into the encoded stream, not a
 metadata tag or a preview-only effect. In Squeeze mode the coded size will
 match the sensor, and the compression is visible in the pixel content itself
-(open the file in any player with no desqueeze correction - subjects should
+(open the file in any player with no desqueeze correction; subjects should
 look narrower/taller than in Stretch mode).
 
 ## Known limitations / non-goals (by design, per spec)
 
-- No lens-extension detection, no anamorphic metadata/hint boxes - the
+- No lens-extension detection, no anamorphic metadata/hint boxes: the
   distortion is a real per-pixel GL resample, always.
-- No dependency on `LENS_DISTORTION` or physical lens calibration - purely
+- No dependency on `LENS_DISTORTION` or physical lens calibration: purely
   digital, forced distortion.
-- No `AspectRatio.RATIO_16_9`/`RATIO_4_3` snapping - capture size comes from
+- No `AspectRatio.RATIO_16_9`/`RATIO_4_3` snapping; capture size comes from
   `Camera2CameraInfo` / `StreamConfigurationMap.getOutputSizes()` directly.
 - Front-camera mirroring is not compensated for; back camera is the default
   and primary target.
