@@ -128,12 +128,47 @@ Current (correct) architecture, as of the `bugfix/ui-rotation-docking` merge:
 - `StretchRecorder.kt`: hand-rolled MediaCodec (H.264 + AAC) + `MediaMuxer`
   recording path, `MediaStore` output.
 
-## Git / GitHub workflow conventions
+## Git / GitHub / GitLab workflow conventions
 
 - PR-based workflow: branch, push, open a PR, merge via GitHub. Branch
   protection on `master` is enforced server-side (confirmed: GitHub rejects
   direct pushes with "Changes must be made through a pull request"); there
   is no direct-push exception, even for repo-meta files.
+- **The repo is hosted on both GitHub and GitLab with one shared history**
+  (github.com/AlexWeber64/digital-anamorphic-camera and
+  gitlab.com/AlexWeber64/digital-anamorphic-camera): the same commits, with
+  the same IDs, on both. GitHub is where PRs are opened and merged; GitLab
+  follows it. Never let the two diverge.
+- In the local clone, `origin` fetches from GitHub and pushes to *both*
+  hosts, and `gitlab` is the GitLab repo on its own. So
+  `git push -u origin <branch>` puts a branch on both hosts at once.
+- **Never push `master` directly.** GitHub rejects it but GitLab accepts it,
+  which leaves the hosts with different `master`s. Changes reach `master`
+  only by merging a PR on GitHub.
+- **After merging a PR on GitHub**, bring GitLab up to the same merge commit
+  and clean up the branch on both hosts:
+  ```
+  git checkout master
+  git pull --ff-only origin master
+  git push origin master                # GitHub: up to date; GitLab: fast-forward
+  git push origin --delete <branch>     # deletes the branch on both hosts
+  ```
+  Merge without GitHub's "delete branch" option, or the GitHub half of the
+  last command fails (harmlessly, since it is already gone). Pushing `master`
+  to GitLab also marks a matching open GitLab MR as merged.
+- Don't merge MRs or edit files on GitLab's website: that creates commits
+  only GitLab has. If it happens anyway, push that commit to a new branch on
+  GitHub, open and merge a PR for it, then push `master` to GitLab as above
+  (GitHub's merge commit contains the GitLab commit, so it fast-forwards).
+- Never force-push or rewrite `master` on either host. Both protect it:
+  a GitHub ruleset (PR required, no force-push, no deletion) and GitLab's
+  protected branch (force-push off).
+- CI runs on both hosts and both build the debug APK: GitHub Actions
+  (`.github/workflows/android-build.yml`, see below) and GitLab CI
+  (`.gitlab-ci.yml`, on merge requests and pushes to `master`). Keep both
+  files.
+- Commit author: `AlexWeber64 <hi@alexweber.org>`, set in the clone's local
+  git config (the machine's global identity is a different account).
 - Branch naming: `feature/<short-description>`, `bugfix/<short-description>`,
   `refactor/<short-description>`, `chore/<short-description>`.
 - Commit messages: conventional-commit prefixes (`feat:`, `fix:`, `chore:`),
